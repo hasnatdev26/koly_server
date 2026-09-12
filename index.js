@@ -19,6 +19,11 @@ const app = express();
 
 const port = process.env.PORT || 5000;
 
+// Assigned after the database connection is established. Keeping this available
+// to the auth middleware lets a newly blocked user lose access immediately,
+// including from an already-issued cookie.
+let usersCollection;
+
 // =====================================================
 // MIDDLEWARE
 // =====================================================
@@ -156,11 +161,42 @@ const verifyToken = (req, res, next) => {
   jwt.verify(
     token,
     process.env.ACCESS_TOKEN_SECRET,
-    (err, decoded) => {
+    async (err, decoded) => {
       if (err) {
         return res.status(401).send({
           success: false,
           message: "Invalid or expired token",
+        });
+      }
+
+      try {
+        if (!usersCollection || !ObjectId.isValid(decoded.userId)) {
+          throw new Error("User collection is unavailable");
+        }
+
+        const user = await usersCollection.findOne(
+          { _id: new ObjectId(decoded.userId) },
+          { projection: { status: 1 } }
+        );
+
+        if (!user || user.status === "blocked") {
+          res.clearCookie("token", {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite:
+              process.env.NODE_ENV === "production" ? "none" : "strict",
+          });
+
+          return res.status(403).send({
+            success: false,
+            message: "Your account has been blocked. Please contact support.",
+          });
+        }
+      } catch (error) {
+        console.error("User status verification error:", error);
+        return res.status(500).send({
+          success: false,
+          message: "Unable to verify account status",
         });
       }
 
@@ -280,7 +316,7 @@ async function run() {
     // COLLECTIONS
     // =================================================
 
-    const usersCollection =
+    usersCollection =
       db.collection("users");
 
     const countersCollection =
@@ -480,7 +516,9 @@ async function run() {
             return res.status(409).send({
               success: false,
               message:
-                "Email already exists",
+                existingUser.status === "blocked"
+                  ? "This email belongs to a blocked account and cannot be used to sign up."
+                  : "Email already exists",
             });
           }
 
@@ -738,6 +776,14 @@ async function run() {
             });
           }
 
+          if (user.status === "blocked") {
+            return res.status(403).send({
+              success: false,
+              message:
+                "Your account has been blocked. Please contact support.",
+            });
+          }
+
           const passwordValid =
             verifyPassword(
               password,
@@ -931,6 +977,266 @@ async function run() {
         }
       }
     );
+
+
+
+// =====================================================
+// GET ALL USERS API
+// ADMIN ONLY
+// =====================================================
+
+app.get("/admin/users", verifyToken, async (req, res) => {
+  try {
+    // CHECK LOGIN
+    if (!req.user) {
+      return res.status(401).send({
+        success: false,
+        message: "Unauthorized access",
+      });
+    }
+
+    // CHECK ADMIN
+    if (
+      !req.user.role ||
+      req.user.role.toLowerCase() !== "admin"
+    ) {
+      return res.status(403).send({
+        success: false,
+        message: "Only admin can access users",
+      });
+    }
+
+    // GET ALL USERS EXCEPT ADMIN
+    const users = await usersCollection
+      .find(
+        {
+          role: { $ne: "admin" },
+        },
+        {
+          projection: {
+            password: 0,
+          },
+        }
+      )
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    return res.status(200).send({
+      success: true,
+      count: users.length,
+      users,
+    });
+  } catch (error) {
+    console.error("Get All Customers Error:", error);
+
+    return res.status(500).send({
+      success: false,
+      message: "Failed to get users",
+    });
+  }
+});
+
+
+// =====================================================
+// BLOCK / UNBLOCK USER
+// PATCH /admin/users/:id/status
+// =====================================================
+
+app.patch(
+  "/admin/users/:id/status",
+  verifyToken,
+  async (req, res) => {
+    try {
+      // CHECK LOGIN
+      if (!req.user) {
+        return res.status(401).send({
+          success: false,
+          message: "Unauthorized access",
+        });
+      }
+
+      // CHECK ADMIN
+      if (
+        !req.user.role ||
+        req.user.role.toLowerCase() !== "admin"
+      ) {
+        return res.status(403).send({
+          success: false,
+          message: "Only admin can update user status",
+        });
+      }
+
+      const { id } = req.params;
+      const { status } = req.body;
+
+      // CHECK STATUS
+      if (!["active", "blocked"].includes(status)) {
+        return res.status(400).send({
+          success: false,
+          message: "Invalid user status",
+        });
+      }
+
+      // FIND USER
+      const user = await usersCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!user) {
+        return res.status(404).send({
+          success: false,
+          message: "User not found",
+        });
+      }
+
+      // PREVENT ADMIN STATUS CHANGE
+      if (
+        user.role &&
+        user.role.toLowerCase() === "admin"
+      ) {
+        return res.status(403).send({
+          success: false,
+          message: "Admin user cannot be blocked",
+        });
+      }
+
+      // UPDATE STATUS
+      const result = await usersCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+        },
+        {
+          $set: {
+            status: status,
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(400).send({
+          success: false,
+          message: "User status was not updated",
+        });
+      }
+
+      return res.status(200).send({
+        success: true,
+        message:
+          status === "blocked"
+            ? "User blocked successfully"
+            : "User unblocked successfully",
+        status,
+      });
+    } catch (error) {
+      console.error(
+        "Update User Status Error:",
+        error
+      );
+
+      return res.status(500).send({
+        success: false,
+        message: "Failed to update user status",
+      });
+    }
+  }
+);
+
+
+
+// =====================================================
+// DELETE USER
+// DELETE /admin/users/:id
+// =====================================================
+
+app.delete(
+  "/admin/users/:id",
+  verifyToken,
+  async (req, res) => {
+    try {
+      // CHECK LOGIN
+      if (!req.user) {
+        return res.status(401).send({
+          success: false,
+          message: "Unauthorized access",
+        });
+      }
+
+      // CHECK ADMIN
+      if (
+        !req.user.role ||
+        req.user.role.toLowerCase() !== "admin"
+      ) {
+        return res.status(403).send({
+          success: false,
+          message: "Only admin can delete users",
+        });
+      }
+
+      const { id } = req.params;
+
+      // FIND USER
+      const user = await usersCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!user) {
+        return res.status(404).send({
+          success: false,
+          message: "User not found",
+        });
+      }
+
+      // PREVENT ADMIN DELETE
+      if (
+        user.role &&
+        user.role.toLowerCase() === "admin"
+      ) {
+        return res.status(403).send({
+          success: false,
+          message: "Admin user cannot be deleted",
+        });
+      }
+
+      // DELETE USER
+      const result = await usersCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+
+      if (result.deletedCount === 0) {
+        return res.status(400).send({
+          success: false,
+          message: "User was not deleted",
+        });
+      }
+
+      return res.status(200).send({
+        success: true,
+        message: "User deleted successfully",
+        userId: id,
+      });
+    } catch (error) {
+      console.error(
+        "Delete User Error:",
+        error
+      );
+
+      return res.status(500).send({
+        success: false,
+        message: "Failed to delete user",
+      });
+    }
+  }
+);
+
+
+
+
+
+
+
+
+
 
     // =====================================================
     // ADD PRODUCT API
@@ -1392,10 +1698,29 @@ app.get("/products", async (req, res) => {
           const { id } =
             req.params;
 
-          const product =
-            await productsCollection.findOne({
-              productId: id,
-            });
+          let product = null;
+
+          if (
+            ObjectId.isValid(id)
+          ) {
+            product =
+              await productsCollection.findOne(
+                {
+                  _id: new ObjectId(
+                    id
+                  ),
+                }
+              );
+          }
+
+          if (!product) {
+            product =
+              await productsCollection.findOne(
+                {
+                  productId: id,
+                }
+              );
+          }
 
           if (!product) {
             return res.status(404).send({
@@ -2368,6 +2693,16 @@ app.patch(
           const color = colorResult.value;
           const size = sizeResult.value;
 
+          if (
+            product.stockStatus ===
+            "out-of-stock"
+          ) {
+            return res.status(400).send({
+              success: false,
+              message: "Product is out of stock",
+            });
+          }
+
           const stock = Number(product.quantity || 0);
 
           if (stock <= 0) {
@@ -2901,6 +3236,16 @@ app.post("/orders", verifyToken, async (req, res) => {
       // STOCK
       // -------------------------------------------------------
 
+      if (
+        product.stockStatus ===
+        "out-of-stock"
+      ) {
+        return res.status(400).send({
+          success: false,
+          message: `${product.productName || product.name} is out of stock`,
+        });
+      }
+
       // Products store available inventory in `quantity`. For a KG product,
       // this is the available weight in kilograms (for example, 4.5).
       const stock = Number(product.quantity ?? product.stock ?? 0);
@@ -3240,6 +3585,348 @@ app.post("/orders", verifyToken, async (req, res) => {
         });
       }
     );
+
+
+
+
+
+
+
+
+
+
+
+
+    // =========================================================
+// ADMIN - GET ALL ORDERS
+// =========================================================
+
+app.get("/admin/orders", verifyToken, async (req, res) => {
+    try {
+        const userId = req.user.userId;
+
+        // =====================================================
+        // VALIDATE USER
+        // =====================================================
+
+        if (!userId || !ObjectId.isValid(userId)) {
+            return res.status(401).send({
+                success: false,
+                message: "Invalid user authentication",
+            });
+        }
+
+        // =====================================================
+        // GET LOGGED-IN USER
+        // =====================================================
+
+        const admin = await usersCollection.findOne({
+            _id: new ObjectId(userId),
+        });
+
+        if (!admin) {
+            return res.status(404).send({
+                success: false,
+                message: "User not found",
+            });
+        }
+
+        // =====================================================
+        // ADMIN CHECK
+        // =====================================================
+
+        if (
+            !admin.role ||
+            admin.role.toLowerCase() !== "admin"
+        ) {
+            return res.status(403).send({
+                success: false,
+                message: "Only admin can access orders",
+            });
+        }
+
+        // =====================================================
+        // GET ALL ORDERS
+        // =====================================================
+
+        const orders = await ordersCollection
+            .find({})
+            .sort({
+                createdAt: -1,
+            })
+            .toArray();
+
+        // =====================================================
+        // RESPONSE
+        // =====================================================
+
+        res.status(200).send({
+            success: true,
+            count: orders.length,
+            orders,
+        });
+    } catch (error) {
+        console.error(
+            "ADMIN GET ALL ORDERS ERROR:",
+            error
+        );
+
+        res.status(500).send({
+            success: false,
+            message: "Failed to get orders",
+            error:
+                process.env.NODE_ENV === "development"
+                    ? error.message
+                    : undefined,
+        });
+    }
+});
+
+// =========================================================
+// ADMIN - UPDATE ORDER STATUS
+// PATCH /admin/orders/:id/status
+// =========================================================
+
+app.patch(
+    "/admin/orders/:id/status",
+    verifyToken,
+    async (req, res) => {
+        try {
+            if (
+                !req.user?.role ||
+                req.user.role.toLowerCase() !== "admin"
+            ) {
+                return res.status(403).send({
+                    success: false,
+                    message: "Only admin can update order status",
+                });
+            }
+
+            const { id } = req.params;
+
+            const orderStatus = String(
+                req.body?.orderStatus ||
+                    req.body?.status ||
+                    ""
+            )
+                .trim()
+                .toLowerCase();
+
+            const allowedStatuses = [
+                "pending",
+                "confirmed",
+                "processing",
+                "shipped",
+                "delivered",
+                "completed",
+                "cancelled",
+                "canceled",
+            ];
+
+            if (!allowedStatuses.includes(orderStatus)) {
+                return res.status(400).send({
+                    success: false,
+                    message: "Invalid order status",
+                });
+            }
+
+            if (!id || !ObjectId.isValid(id)) {
+                return res.status(400).send({
+                    success: false,
+                    message: "Invalid order ID",
+                });
+            }
+
+            const order = await ordersCollection.findOne({
+                _id: new ObjectId(id),
+            });
+
+            if (!order) {
+                return res.status(404).send({
+                    success: false,
+                    message: "Order not found",
+                });
+            }
+
+            const now = new Date();
+
+            const result = await ordersCollection.updateOne(
+                {
+                    _id: new ObjectId(id),
+                },
+                {
+                    $set: {
+                        orderStatus,
+                        status: orderStatus,
+                        updatedAt: now,
+                    },
+                }
+            );
+
+            if (result.matchedCount === 0) {
+                return res.status(404).send({
+                    success: false,
+                    message: "Order not found",
+                });
+            }
+
+            return res.status(200).send({
+                success: true,
+                message: "Order status updated successfully",
+                orderStatus,
+                updatedAt: now,
+            });
+        } catch (error) {
+            console.error(
+                "ADMIN UPDATE ORDER STATUS ERROR:",
+                error
+            );
+
+            return res.status(500).send({
+                success: false,
+                message: "Failed to update order status",
+                error:
+                    process.env.NODE_ENV === "development"
+                        ? error.message
+                        : undefined,
+            });
+        }
+    }
+);
+
+// =========================================================
+// ADMIN - DELETE ORDER + RESTORE STOCK
+// DELETE /admin/orders/:id
+// =========================================================
+
+app.delete(
+    "/admin/orders/:id",
+    verifyToken,
+    async (req, res) => {
+        try {
+            if (
+                !req.user?.role ||
+                req.user.role.toLowerCase() !== "admin"
+            ) {
+                return res.status(403).send({
+                    success: false,
+                    message: "Only admin can delete orders",
+                });
+            }
+
+            const { id } = req.params;
+
+            if (!id || !ObjectId.isValid(id)) {
+                return res.status(400).send({
+                    success: false,
+                    message: "Invalid order ID",
+                });
+            }
+
+            const order = await ordersCollection.findOne({
+                _id: new ObjectId(id),
+            });
+
+            if (!order) {
+                return res.status(404).send({
+                    success: false,
+                    message: "Order not found",
+                });
+            }
+
+            const items = Array.isArray(order.items)
+                ? order.items
+                : Array.isArray(order.products)
+                ? order.products
+                : [];
+
+            const now = new Date();
+
+            const stockOperations = items
+                .map((item) => {
+                    const productId = item?.productId;
+
+                    if (
+                        !productId ||
+                        !ObjectId.isValid(
+                            String(productId)
+                        )
+                    ) {
+                        return null;
+                    }
+
+                    const quantity = Number(
+                        item?.quantity
+                    );
+
+                    if (
+                        !Number.isFinite(quantity) ||
+                        quantity <= 0
+                    ) {
+                        return null;
+                    }
+
+                    return {
+                        updateOne: {
+                            filter: {
+                                _id: new ObjectId(
+                                    String(productId)
+                                ),
+                            },
+                            update: {
+                                $inc: {
+                                    quantity,
+                                },
+                                $set: {
+                                    updatedAt: now,
+                                },
+                            },
+                        },
+                    };
+                })
+                .filter(Boolean);
+
+            if (stockOperations.length) {
+                await productsCollection.bulkWrite(
+                    stockOperations
+                );
+            }
+
+            const deleteResult =
+                await ordersCollection.deleteOne({
+                    _id: new ObjectId(id),
+                });
+
+            if (deleteResult.deletedCount === 0) {
+                return res.status(404).send({
+                    success: false,
+                    message: "Order could not be deleted",
+                });
+            }
+
+            return res.status(200).send({
+                success: true,
+                message:
+                    "Order deleted and product stock restored successfully",
+                restoredItems: stockOperations.length,
+            });
+        } catch (error) {
+            console.error(
+                "ADMIN DELETE ORDER ERROR:",
+                error
+            );
+
+            return res.status(500).send({
+                success: false,
+                message: "Failed to delete order",
+                error:
+                    process.env.NODE_ENV === "development"
+                        ? error.message
+                        : undefined,
+            });
+        }
+    }
+);
 
     // =====================================================
     // ROOT
