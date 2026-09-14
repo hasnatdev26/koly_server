@@ -1,4 +1,5 @@
 require("dotenv").config();
+require("dotenv").config({ path: `${__dirname}/.env.local`, override: true });
 
 const express = require("express");
 const cors = require("cors");
@@ -44,6 +45,52 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 app.use(cookieParser());
+
+// The API key stays on the server. Never put a DeepL key in Vite/React env vars,
+// because all VITE_* values are exposed to every browser visitor.
+app.post("/translate", async (req, res) => {
+  const { texts, targetLanguage } = req.body || {};
+  const supportedLanguages = new Set(["DE", "EN"]);
+
+  if (!Array.isArray(texts) || texts.length === 0 || texts.length > 50 || !supportedLanguages.has(targetLanguage)) {
+    return res.status(400).send({ success: false, message: "Invalid translation request" });
+  }
+
+  if (!texts.every((text) => typeof text === "string" && text.length <= 5000)) {
+    return res.status(400).send({ success: false, message: "Translation text is invalid" });
+  }
+
+  const apiKey = process.env.DEEPL_API_KEY;
+  if (!apiKey) {
+    return res.status(503).send({ success: false, message: "DeepL is not configured. Add DEEPL_API_KEY to server/.env." });
+  }
+
+  const apiUrl = process.env.DEEPL_API_URL || (apiKey.endsWith(":fx")
+    ? "https://api-free.deepl.com/v2/translate"
+    : "https://api.deepl.com/v2/translate");
+
+  try {
+    const deepLResponse = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `DeepL-Auth-Key ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: texts, source_lang: "EN", target_lang: targetLanguage }),
+    });
+    const data = await deepLResponse.json();
+
+    if (!deepLResponse.ok) {
+      console.error("DeepL API error:", data);
+      return res.status(deepLResponse.status).send({ success: false, message: "DeepL could not translate the page" });
+    }
+
+    return res.send({ success: true, translations: data.translations.map((translation) => translation.text) });
+  } catch (error) {
+    console.error("DeepL request error:", error);
+    return res.status(502).send({ success: false, message: "Unable to reach DeepL" });
+  }
+});
 
 const toBoolean = (value) =>
   value === true ||
@@ -977,6 +1024,46 @@ async function run() {
         }
       }
     );
+
+    app.patch("/profile", verifyToken, async (req, res) => {
+      try {
+        const address = typeof req.body?.address === "string" ? req.body.address.trim() : "";
+        if (!address || address.length > 500) {
+          return res.status(400).send({ success: false, message: "Please enter an address of up to 500 characters" });
+        }
+
+        const user = await usersCollection.findOneAndUpdate(
+          { _id: new ObjectId(req.user.userId) },
+          { $set: { address, updatedAt: new Date() } },
+          { returnDocument: "after", projection: { password: 0 } }
+        );
+        if (!user) return res.status(404).send({ success: false, message: "User not found" });
+        return res.send({ success: true, user });
+      } catch (error) {
+        console.error("Profile address update error:", error);
+        return res.status(500).send({ success: false, message: "Unable to save address" });
+      }
+    });
+
+    app.post("/profile/photo", verifyToken, upload.single("profileImage"), async (req, res) => {
+      try {
+        if (!req.file) {
+          return res.status(400).send({ success: false, message: "Please choose an image file" });
+        }
+
+        const profileImage = `/uploads/${req.file.filename}`;
+        const user = await usersCollection.findOneAndUpdate(
+          { _id: new ObjectId(req.user.userId) },
+          { $set: { profileImage, updatedAt: new Date() } },
+          { returnDocument: "after", projection: { password: 0 } }
+        );
+        if (!user) return res.status(404).send({ success: false, message: "User not found" });
+        return res.send({ success: true, user });
+      } catch (error) {
+        console.error("Profile photo update error:", error);
+        return res.status(500).send({ success: false, message: "Unable to save profile photo" });
+      }
+    });
 
 
 
@@ -3556,40 +3643,55 @@ app.post("/orders", verifyToken, async (req, res) => {
     });
   }
 });
-    // =====================================================
-    // CUSTOMER ONLY
-    // =====================================================
-
-    app.get(
-      "/customer-only",
-      verifyToken,
-      (req, res) => {
-
-        if (
-          req.user.role !==
-          "customer"
-        ) {
-          return res
-            .status(403)
-            .send({
-              success: false,
-              message:
-                "Forbidden access",
-            });
-        }
-
-        res.send({
-          success: true,
-          message:
-            "Welcome Customer",
-        });
-      }
-    );
 
 
 
+app.get("/customer-only", verifyToken, async (req, res) => {
+  try {
+    // Check customer role
+    if (
+      !req.user?.role ||
+      req.user.role.toLowerCase() !== "customer"
+    ) {
+      return res.status(403).send({
+        success: false,
+        message: "Forbidden access",
+      });
+    }
 
+    // Logged-in customer ID
+    const userId = req.user.userId;
 
+    if (!userId || !ObjectId.isValid(userId)) {
+      return res.status(401).send({
+        success: false,
+        message: "Invalid user authentication",
+      });
+    }
+
+    // Get customer's orders
+    const orders = await ordersCollection
+      .find({ userId: userId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    return res.status(200).send({
+      success: true,
+      message: "Welcome Customer",
+      userId: userId,
+      count: orders.length,
+      orders: orders,
+    });
+  } catch (error) {
+    console.error("CUSTOMER ORDERS ERROR:", error);
+
+    return res.status(500).send({
+      success: false,
+      message: "Failed to get customer orders",
+      error: error.message,
+    });
+  }
+});
 
 
 
