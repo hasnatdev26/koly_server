@@ -1,7 +1,9 @@
 require("dotenv").config();
 require("dotenv").config({ path: `${__dirname}/.env.local`, override: true });
+require("dotenv").config({ path: `${__dirname}/.mail.local`, override: true });
 
 const express = require("express");
+const nodemailer = require("nodemailer");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
@@ -19,6 +21,60 @@ const {
 const app = express();
 
 const port = process.env.PORT || 5000;
+
+const mailUser = (process.env.NODEMAILER_USER || "").trim();
+const mailPass = (process.env.NODEMAILER_PASS || "").replace(/\s/g, "");
+
+const mailTransporter =
+  mailUser && mailPass
+    ? nodemailer.createTransport({
+        service: "gmail",
+        auth: {
+          user: mailUser,
+          pass: mailPass,
+        },
+      })
+    : null;
+
+const resolveAdminEmail = async () => {
+  if (usersCollection) {
+    const admin = await usersCollection.findOne(
+      { role: { $regex: /^admin$/i } },
+      { projection: { email: 1 } }
+    );
+    const fromDb =
+      typeof admin?.email === "string" ? admin.email.trim() : "";
+    if (fromDb) return fromDb;
+  }
+
+  const fromEnv = (process.env.ADMIN_EMAIL || "").trim();
+  return fromEnv || null;
+};
+
+const sendEmail = async ({ to, subject, text }) => {
+  const recipient = typeof to === "string" ? to.trim() : "";
+  if (!mailTransporter || !recipient) {
+    if (!mailTransporter && recipient) {
+      console.warn(
+        "Email skipped (set NODEMAILER_USER and NODEMAILER_PASS in .mail.local or .env):",
+        subject
+      );
+    }
+    return;
+  }
+
+  try {
+    await mailTransporter.sendMail({
+      from: `KolyStore <${mailUser}>`,
+      to: recipient,
+      subject,
+      text,
+    });
+  } catch (error) {
+    // Email delivery must not undo a completed signup or order.
+    console.error("Email delivery error:", error.message);
+  }
+};
 
 // Assigned after the database connection is established. Keeping this available
 // to the auth middleware lets a newly blocked user lose access immediately,
@@ -720,6 +776,31 @@ async function run() {
           // ---------------------------------------------
           // RESPONSE
           // ---------------------------------------------
+
+          void sendEmail({
+            to: user.email,
+            subject: "Welcome to KolyStore",
+            text:
+              `Hello ${user.name},\n\n` +
+              "Welcome to KolyStore! Your account has been created successfully.\n\n" +
+              `Customer ID: ${user.customerId}`,
+          });
+
+          const adminEmail = await resolveAdminEmail();
+          if (adminEmail) {
+            void sendEmail({
+              to: adminEmail,
+              subject: "New KolyStore customer signup",
+              text:
+                "A new customer has signed up.\n\n" +
+                `Name: ${user.name}\nEmail: ${user.email}\n` +
+                `Phone: ${user.phone}\nCustomer ID: ${user.customerId}`,
+            });
+          } else {
+            console.warn(
+              "Admin signup notification skipped: no admin email in users collection"
+            );
+          }
 
           return res.status(201).send({
             success: true,
@@ -3415,7 +3496,7 @@ app.post("/orders", verifyToken, async (req, res) => {
 
       lineItems.push({
         productId: product._id,
-        name: product.name,
+        name: product.productName || product.name || "",
         image:
           product.image ||
           product.images?.[0] ||
@@ -3607,6 +3688,62 @@ app.post("/orders", verifyToken, async (req, res) => {
       await cartCollection.deleteMany({
         userId,
       });
+    }
+
+    // =========================================================
+    // ORDER EMAIL (customer + admin)
+    // =========================================================
+
+    const itemsSummary = lineItems
+      .map((item) => {
+        const variant = [item.color, item.size].filter(Boolean).join(", ");
+        const variantText = variant ? ` (${variant})` : "";
+        const label = item.productName || item.name || "Product";
+        return `- ${label}${variantText} × ${item.quantity} — ${item.total}`;
+      })
+      .join("\n");
+
+    const customerEmail =
+      typeof user.email === "string" ? user.email.trim() : "";
+
+    if (customerEmail) {
+      void sendEmail({
+        to: customerEmail,
+        subject: `Order confirmation ${orderId} – KolyStore`,
+        text:
+          `Hello ${user.name || "Customer"},\n\n` +
+          "Thank you for your order! We have received it successfully.\n\n" +
+          `Order ID: ${orderId}\n` +
+          `Total: ${total}\n` +
+          `Payment: ${paymentMethod}\n` +
+          `Status: pending verification\n\n` +
+          `Delivery address:\n${finalAddress}\n\n` +
+          `Items:\n${itemsSummary}\n\n` +
+          "We will notify you when your payment is confirmed.",
+      });
+    }
+
+    const adminEmail = await resolveAdminEmail();
+    if (adminEmail) {
+      void sendEmail({
+        to: adminEmail,
+        subject: `New order ${orderId} – KolyStore`,
+        text:
+          "A new order has been placed.\n\n" +
+          `Order ID: ${orderId}\n` +
+          `Customer: ${user.name || ""}\n` +
+          `Email: ${user.email || ""}\n` +
+          `Phone: ${user.phone || ""}\n` +
+          `Address: ${finalAddress}\n` +
+          `Payment: ${paymentMethod}\n` +
+          `Transaction ID: ${payment.transactionId.trim()}\n` +
+          `Total: ${total}\n\n` +
+          `Items:\n${itemsSummary}`,
+      });
+    } else {
+      console.warn(
+        "Admin order notification skipped: no admin email in users collection"
+      );
     }
 
     // =========================================================
@@ -3872,6 +4009,83 @@ app.patch(
                 });
             }
 
+            const normalizeOrderStatus = (value) => {
+                const status = String(value || "")
+                    .trim()
+                    .toLowerCase();
+                return status === "canceled" ? "cancelled" : status;
+            };
+
+            const formatStatusLabel = (value) => {
+                const normalized = normalizeOrderStatus(value);
+                return (
+                    normalized.charAt(0).toUpperCase() +
+                    normalized.slice(1)
+                );
+            };
+
+            const previousStatus = normalizeOrderStatus(
+                order.orderStatus || order.status
+            );
+            const nextStatus = normalizeOrderStatus(orderStatus);
+
+            if (previousStatus !== nextStatus) {
+                let customerEmail =
+                    typeof order.customer?.email === "string"
+                        ? order.customer.email.trim()
+                        : "";
+                let customerName =
+                    typeof order.customer?.name === "string"
+                        ? order.customer.name.trim()
+                        : "";
+
+                if (
+                    !customerEmail &&
+                    order.userId &&
+                    ObjectId.isValid(String(order.userId))
+                ) {
+                    const customer = await usersCollection.findOne(
+                        {
+                            _id: new ObjectId(
+                                String(order.userId)
+                            ),
+                        },
+                        {
+                            projection: {
+                                email: 1,
+                                name: 1,
+                            },
+                        }
+                    );
+
+                    if (
+                        typeof customer?.email === "string"
+                    ) {
+                        customerEmail = customer.email.trim();
+                    }
+                    if (
+                        !customerName &&
+                        typeof customer?.name === "string"
+                    ) {
+                        customerName = customer.name.trim();
+                    }
+                }
+
+                if (customerEmail) {
+                    void sendEmail({
+                        to: customerEmail,
+                        subject: `Order ${order.orderId || id} update – KolyStore`,
+                        text:
+                            `Hello ${customerName || "Customer"},\n\n` +
+                            "Your order status has been updated.\n\n" +
+                            `Order ID: ${order.orderId || id}\n` +
+                            `Previous status: ${formatStatusLabel(previousStatus)}\n` +
+                            `Current status: ${formatStatusLabel(nextStatus)}\n\n` +
+                            "Thank you for shopping with KolyStore.",
+                    });
+                }
+            }
+
             return res.status(200).send({
                 success: true,
                 message: "Order status updated successfully",
@@ -4029,6 +4243,306 @@ app.delete(
         }
     }
 );
+
+    // =====================================================
+    // ADMIN - DASHBOARD STATS (visitor timezone)
+    // =====================================================
+
+    const resolveVisitorTimeZone = (value) => {
+      const fallback = "UTC";
+
+      if (!value || typeof value !== "string") {
+        return fallback;
+      }
+
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return fallback;
+      }
+
+      try {
+        Intl.DateTimeFormat(undefined, {
+          timeZone: trimmed,
+        }).format(new Date());
+        return trimmed;
+      } catch {
+        return fallback;
+      }
+    };
+
+    const getDateKeyInTimeZone = (date, timeZone) => {
+      return new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(date);
+    };
+
+    const getZonedCalendarParts = (date, timeZone) => {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+      }).formatToParts(date);
+
+      const read = (type) =>
+        Number(parts.find((part) => part.type === type)?.value);
+
+      return {
+        year: read("year"),
+        month: read("month"),
+        day: read("day"),
+      };
+    };
+
+    app.get("/admin/dashboard", verifyToken, async (req, res) => {
+      try {
+        if (
+          !req.user?.role ||
+          req.user.role.toLowerCase() !== "admin"
+        ) {
+          return res.status(403).send({
+            success: false,
+            message: "Only admin can access dashboard",
+          });
+        }
+
+        const normalizeOrderStatus = (value) => {
+          const status = String(value || "")
+            .trim()
+            .toLowerCase();
+          return status === "canceled" ? "cancelled" : status;
+        };
+
+        const isCancelledStatus = (order) => {
+          const status = normalizeOrderStatus(
+            order?.orderStatus || order?.status
+          );
+          return status === "cancelled";
+        };
+
+        const getOrderTotal = (order) => {
+          const total = Number(order?.total);
+          return Number.isFinite(total) ? total : 0;
+        };
+
+        const getOrderDate = (order) => {
+          const raw = order?.createdAt;
+          if (!raw) return null;
+          const date = raw instanceof Date ? raw : new Date(raw);
+          return Number.isNaN(date.getTime()) ? null : date;
+        };
+
+        const timeZone = resolveVisitorTimeZone(req.query.timezone);
+
+        const now = new Date();
+        const nowInZone = getZonedCalendarParts(now, timeZone);
+        const currentYear = nowInZone.year;
+        const currentMonth = nowInZone.month;
+        const todayKey = getDateKeyInTimeZone(now, timeZone);
+        const currentMonthKey = todayKey.slice(0, 7);
+
+        const daysInCurrentMonth = new Date(
+          currentYear,
+          currentMonth,
+          0
+        ).getDate();
+
+        const monthLabels = [
+          "Jan",
+          "Feb",
+          "Mar",
+          "Apr",
+          "May",
+          "Jun",
+          "Jul",
+          "Aug",
+          "Sep",
+          "Oct",
+          "Nov",
+          "Dec",
+        ];
+
+        const [
+          totalUsers,
+          activeUsers,
+          totalProducts,
+          allOrders,
+        ] = await Promise.all([
+          usersCollection.countDocuments({
+            role: { $ne: "admin" },
+          }),
+          usersCollection.countDocuments({
+            role: { $ne: "admin" },
+            status: { $ne: "blocked" },
+          }),
+          productsCollection.countDocuments({}),
+          ordersCollection
+            .find(
+              {},
+              {
+                projection: {
+                  total: 1,
+                  createdAt: 1,
+                  userId: 1,
+                  orderStatus: 1,
+                  status: 1,
+                },
+              }
+            )
+            .toArray(),
+        ]);
+
+        const orderStatusCounts = {
+          pending: 0,
+          confirmed: 0,
+          processing: 0,
+          shipped: 0,
+          delivered: 0,
+          completed: 0,
+          cancelled: 0,
+        };
+
+        let todaySales = 0;
+        let monthSales = 0;
+        let yearSales = 0;
+        let totalSales = 0;
+        const todayCustomerIds = new Set();
+
+        const monthlySalesMap = Array.from({ length: 12 }, (_, index) => ({
+          month: monthLabels[index],
+          sales: 0,
+        }));
+
+        const dailySalesMap = Array.from(
+          { length: daysInCurrentMonth },
+          (_, index) => ({
+            day: index + 1,
+            sales: 0,
+          })
+        );
+
+        const numberOfWeeks = Math.ceil(daysInCurrentMonth / 7);
+        const weeklySalesMap = Array.from(
+          { length: numberOfWeeks },
+          (_, index) => ({
+            week: `Week ${index + 1}`,
+            sales: 0,
+          })
+        );
+
+        for (const order of allOrders) {
+          const status = normalizeOrderStatus(
+            order?.orderStatus || order?.status || "pending"
+          );
+
+          if (orderStatusCounts[status] !== undefined) {
+            orderStatusCounts[status] += 1;
+          } else {
+            orderStatusCounts.pending += 1;
+          }
+
+          if (isCancelledStatus(order)) {
+            continue;
+          }
+
+          const total = getOrderTotal(order);
+          const createdAt = getOrderDate(order);
+
+          totalSales += total;
+
+          if (!createdAt) {
+            continue;
+          }
+
+          const orderKey = getDateKeyInTimeZone(createdAt, timeZone);
+          const orderParts = getZonedCalendarParts(
+            createdAt,
+            timeZone
+          );
+
+          if (orderKey === todayKey) {
+            todaySales += total;
+            if (order.userId) {
+              todayCustomerIds.add(String(order.userId));
+            }
+          }
+
+          if (orderKey.slice(0, 7) === currentMonthKey) {
+            monthSales += total;
+
+            const dayIndex = orderParts.day - 1;
+            if (dayIndex >= 0 && dayIndex < dailySalesMap.length) {
+              dailySalesMap[dayIndex].sales += total;
+            }
+
+            const weekIndex = Math.floor((orderParts.day - 1) / 7);
+            const safeWeekIndex = Math.min(
+              weekIndex,
+              weeklySalesMap.length - 1
+            );
+            weeklySalesMap[safeWeekIndex].sales += total;
+          }
+
+          if (orderParts.year === currentYear) {
+            yearSales += total;
+            const monthIndex = orderParts.month - 1;
+            if (monthIndex >= 0 && monthIndex < 12) {
+              monthlySalesMap[monthIndex].sales += total;
+            }
+          }
+        }
+
+        return res.status(200).send({
+          success: true,
+          stats: {
+            totalUsers,
+            totalProducts,
+            todaySales,
+            todayCustomers: todayCustomerIds.size,
+            monthSales,
+            yearSales,
+            totalSales,
+            activeUsers,
+          },
+          orderStatuses: orderStatusCounts,
+          monthlySales: monthlySalesMap,
+          weeklySales: weeklySalesMap,
+          dailySales: dailySalesMap,
+          meta: {
+            currentYear,
+            currentMonthName: now.toLocaleString("de-DE", {
+              month: "long",
+              timeZone,
+            }),
+            daysInCurrentMonth,
+            timeZone,
+            localDateTime: now.toLocaleString("de-DE", {
+              timeZone,
+              weekday: "short",
+              day: "2-digit",
+              month: "short",
+              year: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          },
+        });
+      } catch (error) {
+        console.error("ADMIN DASHBOARD ERROR:", error);
+
+        return res.status(500).send({
+          success: false,
+          message: "Failed to load dashboard data",
+          error:
+            process.env.NODE_ENV === "development"
+              ? error.message
+              : undefined,
+        });
+      }
+    });
 
     // =====================================================
     // ROOT
