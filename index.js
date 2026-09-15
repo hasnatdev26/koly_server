@@ -11,6 +11,40 @@ const crypto = require("crypto");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const cloudinary = require("cloudinary").v2;
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+const uploadToCloudinary = async (filePath, folder = "kolystore") => {
+  if (
+    !process.env.CLOUDINARY_CLOUD_NAME ||
+    !process.env.CLOUDINARY_API_KEY ||
+    !process.env.CLOUDINARY_API_SECRET
+  ) {
+    const fileName = path.basename(filePath);
+    return `/uploads/${fileName}`;
+  }
+
+  try {
+    const result = await cloudinary.uploader.upload(filePath, {
+      folder: folder,
+    });
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlink(filePath, (err) => {
+        if (err) console.error("Error deleting local file:", err);
+      });
+    }
+    return result.secure_url;
+  } catch (error) {
+    console.error("Cloudinary Upload Error:", error);
+    const fileName = path.basename(filePath);
+    return `/uploads/${fileName}`;
+  }
+};
 
 const {
   MongoClient,
@@ -279,7 +313,7 @@ const verifyToken = (req, res, next) => {
 
         const user = await usersCollection.findOne(
           { _id: new ObjectId(decoded.userId) },
-          { projection: { status: 1 } }
+          { projection: { status: 1, role: 1 } }
         );
 
         if (!user || user.status === "blocked") {
@@ -295,6 +329,11 @@ const verifyToken = (req, res, next) => {
             message: "Your account has been blocked. Please contact support.",
           });
         }
+
+        req.user = {
+          ...decoded,
+          role: user.role || decoded.role,
+        };
       } catch (error) {
         console.error("User status verification error:", error);
         return res.status(500).send({
@@ -303,11 +342,78 @@ const verifyToken = (req, res, next) => {
         });
       }
 
-      req.user = decoded;
-
       next();
     }
   );
+};
+
+// =====================================================
+// ADMIN VERIFY MIDDLEWARE
+// =====================================================
+
+const verifyAdmin = async (req, res, next) => {
+  try {
+    if (!req.user) {
+      return res.status(401).send({
+        success: false,
+        message: "Unauthorized access",
+      });
+    }
+
+    const userId = req.user.userId;
+    if (!userId || !ObjectId.isValid(userId)) {
+      return res.status(401).send({
+        success: false,
+        message: "Invalid user authentication",
+      });
+    }
+
+    if (!usersCollection) {
+      return res.status(500).send({
+        success: false,
+        message: "Database error",
+      });
+    }
+
+    const user = await usersCollection.findOne(
+      { _id: new ObjectId(userId) },
+      { projection: { role: 1, status: 1 } }
+    );
+
+    if (!user) {
+      return res.status(404).send({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    if (user.status === "blocked") {
+      res.clearCookie("token", {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+      });
+      return res.status(403).send({
+        success: false,
+        message: "Your account has been blocked.",
+      });
+    }
+
+    if (!user.role || user.role.toLowerCase() !== "admin") {
+      return res.status(403).send({
+        success: false,
+        message: "Access denied. Admin privileges required.",
+      });
+    }
+
+    next();
+  } catch (error) {
+    console.error("Verify Admin Error:", error);
+    return res.status(500).send({
+      success: false,
+      message: "Failed to verify admin authorization",
+    });
+  }
 };
 
 // =====================================================
@@ -897,10 +1003,10 @@ async function run() {
             });
 
           if (!user) {
-            return res.status(401).send({
+            return res.status(404).send({
               success: false,
               message:
-                "Invalid email or password",
+                "Email address not found. This email is not registered.",
             });
           }
 
@@ -922,7 +1028,7 @@ async function run() {
             return res.status(401).send({
               success: false,
               message:
-                "Invalid email or password",
+                "Incorrect password. Please check your password and try again.",
             });
           }
 
@@ -1017,6 +1123,226 @@ async function run() {
         }
       }
     );
+
+    // =====================================================
+    // FORGOT PASSWORD - SEND OTP
+    // =====================================================
+
+    app.post("/forgot-password/send-otp", async (req, res) => {
+      try {
+        const { email } = req.body;
+
+        if (!email || typeof email !== "string" || !email.trim()) {
+          return res.status(400).send({
+            success: false,
+            message: "Email address is required",
+          });
+        }
+
+        const cleanEmail = email.trim().toLowerCase();
+
+        const user = await usersCollection.findOne({ email: cleanEmail });
+
+        if (!user) {
+          return res.status(404).send({
+            success: false,
+            message: "Email address not found. This email is not registered.",
+          });
+        }
+
+        if (user.status === "blocked") {
+          return res.status(403).send({
+            success: false,
+            message: "Your account is blocked. Please contact support.",
+          });
+        }
+
+        // Generate 6-digit numeric OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+        await usersCollection.updateOne(
+          { email: cleanEmail },
+          {
+            $set: {
+              resetOtp: otp,
+              resetOtpExpires: expiresAt,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        // Send OTP email
+        void sendEmail({
+          to: cleanEmail,
+          subject: "Password Reset OTP – KolyStore",
+          text:
+            `Hello ${user.name || "Customer"},\n\n` +
+            `Your OTP for resetting your KolyStore account password is:\n\n` +
+            `   ${otp}\n\n` +
+            `This OTP is valid for 10 minutes.\n\n` +
+            `If you did not request a password reset, please ignore this email.`,
+        });
+
+        return res.status(200).send({
+          success: true,
+          message: "OTP has been sent to your email address.",
+        });
+      } catch (error) {
+        console.error("SEND OTP ERROR:", error);
+        return res.status(500).send({
+          success: false,
+          message: "Failed to send OTP. Please try again later.",
+        });
+      }
+    });
+
+    // =====================================================
+    // FORGOT PASSWORD - VERIFY OTP
+    // =====================================================
+
+    app.post("/forgot-password/verify-otp", async (req, res) => {
+      try {
+        const { email, otp } = req.body;
+
+        if (!email || !otp) {
+          return res.status(400).send({
+            success: false,
+            message: "Email and OTP are required",
+          });
+        }
+
+        const cleanEmail = String(email).trim().toLowerCase();
+        const cleanOtp = String(otp).trim();
+
+        const user = await usersCollection.findOne({ email: cleanEmail });
+
+        if (!user) {
+          return res.status(404).send({
+            success: false,
+            message: "User not found",
+          });
+        }
+
+        if (!user.resetOtp || user.resetOtp !== cleanOtp) {
+          return res.status(400).send({
+            success: false,
+            message: "Invalid OTP. Please check the OTP sent to your email.",
+          });
+        }
+
+        if (
+          !user.resetOtpExpires ||
+          new Date() > new Date(user.resetOtpExpires)
+        ) {
+          return res.status(400).send({
+            success: false,
+            message: "OTP has expired. Please request a new OTP.",
+          });
+        }
+
+        return res.status(200).send({
+          success: true,
+          message: "OTP verified successfully.",
+        });
+      } catch (error) {
+        console.error("VERIFY OTP ERROR:", error);
+        return res.status(500).send({
+          success: false,
+          message: "Failed to verify OTP",
+        });
+      }
+    });
+
+    // =====================================================
+    // FORGOT PASSWORD - RESET PASSWORD
+    // =====================================================
+
+    app.post("/forgot-password/reset-password", async (req, res) => {
+      try {
+        const { email, otp, newPassword } = req.body;
+
+        if (!email || !otp || !newPassword) {
+          return res.status(400).send({
+            success: false,
+            message: "Email, OTP, and new password are required",
+          });
+        }
+
+        if (String(newPassword).length < 6) {
+          return res.status(400).send({
+            success: false,
+            message: "New password must be at least 6 characters long",
+          });
+        }
+
+        const cleanEmail = String(email).trim().toLowerCase();
+        const cleanOtp = String(otp).trim();
+
+        const user = await usersCollection.findOne({ email: cleanEmail });
+
+        if (!user) {
+          return res.status(404).send({
+            success: false,
+            message: "User not found",
+          });
+        }
+
+        if (!user.resetOtp || user.resetOtp !== cleanOtp) {
+          return res.status(400).send({
+            success: false,
+            message: "Invalid OTP. Please request a new password reset.",
+          });
+        }
+
+        if (
+          !user.resetOtpExpires ||
+          new Date() > new Date(user.resetOtpExpires)
+        ) {
+          return res.status(400).send({
+            success: false,
+            message: "OTP has expired. Please request a new OTP.",
+          });
+        }
+
+        const hashedPassword = hashPassword(String(newPassword));
+
+        await usersCollection.updateOne(
+          { email: cleanEmail },
+          {
+            $set: {
+              password: hashedPassword,
+              updatedAt: new Date(),
+            },
+            $unset: {
+              resetOtp: "",
+              resetOtpExpires: "",
+            },
+          }
+        );
+
+        // Send confirmation email
+        void sendEmail({
+          to: cleanEmail,
+          subject: "Password Reset Successful – KolyStore",
+          text:
+            `Hello ${user.name || "Customer"},\n\n` +
+            `Your KolyStore account password has been successfully reset.\n\n` +
+            `You can now log in with your new password.`,
+        });
+
+        return res.status(200).send({
+          success: true,
+          message: "Password reset successful. You can now log in.",
+        });
+      } catch (error) {
+        console.error("RESET PASSWORD ERROR:", error);
+        return res.status(500).send({
+          success: false,
+          message: "Failed to reset password",
+        });
+      }
+    });
 
     // =====================================================
     // LOGOUT API
@@ -1132,7 +1458,7 @@ async function run() {
           return res.status(400).send({ success: false, message: "Please choose an image file" });
         }
 
-        const profileImage = `/uploads/${req.file.filename}`;
+        const profileImage = await uploadToCloudinary(req.file.path, "kolystore/profiles");
         const user = await usersCollection.findOneAndUpdate(
           { _id: new ObjectId(req.user.userId) },
           { $set: { profileImage, updatedAt: new Date() } },
@@ -1150,30 +1476,13 @@ async function run() {
 
 // =====================================================
 // GET ALL USERS API
+// =====================================================
+// GET ALL USERS API
 // ADMIN ONLY
 // =====================================================
 
-app.get("/admin/users", verifyToken, async (req, res) => {
+app.get("/admin/users", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    // CHECK LOGIN
-    if (!req.user) {
-      return res.status(401).send({
-        success: false,
-        message: "Unauthorized access",
-      });
-    }
-
-    // CHECK ADMIN
-    if (
-      !req.user.role ||
-      req.user.role.toLowerCase() !== "admin"
-    ) {
-      return res.status(403).send({
-        success: false,
-        message: "Only admin can access users",
-      });
-    }
-
     // GET ALL USERS EXCEPT ADMIN
     const users = await usersCollection
       .find(
@@ -1213,27 +1522,9 @@ app.get("/admin/users", verifyToken, async (req, res) => {
 app.patch(
   "/admin/users/:id/status",
   verifyToken,
+  verifyAdmin,
   async (req, res) => {
     try {
-      // CHECK LOGIN
-      if (!req.user) {
-        return res.status(401).send({
-          success: false,
-          message: "Unauthorized access",
-        });
-      }
-
-      // CHECK ADMIN
-      if (
-        !req.user.role ||
-        req.user.role.toLowerCase() !== "admin"
-      ) {
-        return res.status(403).send({
-          success: false,
-          message: "Only admin can update user status",
-        });
-      }
-
       const { id } = req.params;
       const { status } = req.body;
 
@@ -1320,27 +1611,9 @@ app.patch(
 app.delete(
   "/admin/users/:id",
   verifyToken,
+  verifyAdmin,
   async (req, res) => {
     try {
-      // CHECK LOGIN
-      if (!req.user) {
-        return res.status(401).send({
-          success: false,
-          message: "Unauthorized access",
-        });
-      }
-
-      // CHECK ADMIN
-      if (
-        !req.user.role ||
-        req.user.role.toLowerCase() !== "admin"
-      ) {
-        return res.status(403).send({
-          success: false,
-          message: "Only admin can delete users",
-        });
-      }
-
       const { id } = req.params;
 
       // FIND USER
@@ -1418,6 +1691,7 @@ app.delete(
 app.post(
   "/products",
   verifyToken,
+  verifyAdmin,
   upload.array("images", 3),
   async (req, res) => {
     try {
@@ -1583,8 +1857,10 @@ app.post(
         productPrice -
         (productPrice * productDiscount) / 100;
 
-      const images = (req.files || []).map(
-        (file) => `/uploads/${file.filename}`
+      const images = await Promise.all(
+        (req.files || []).map((file) =>
+          uploadToCloudinary(file.path, "kolystore/products")
+        )
       );
 
       const productCounter =
@@ -1708,7 +1984,7 @@ app.post(
     // GET ALL PRODUCTS API
     // =====================================================
 
-   app.get("/admin/products", verifyToken, async (req, res) => {
+   app.get("/admin/products", verifyToken, verifyAdmin, async (req, res) => {
     try {
         if (!req.user) {
             return res.status(401).send({
@@ -1925,26 +2201,8 @@ app.get("/products", async (req, res) => {
     // DELETE PRODUCT
     // =====================================================
 
-    app.delete("/admin/products/:id", verifyToken, async (req, res) => {
+    app.delete("/admin/products/:id", verifyToken, verifyAdmin, async (req, res) => {
     try {
-        // Admin check
-        if (!req.user) {
-            return res.status(401).send({
-                success: false,
-                message: "Unauthorized access",
-            });
-        }
-
-        if (
-            !req.user.role ||
-            req.user.role.toLowerCase() !== "admin"
-        ) {
-            return res.status(403).send({
-                success: false,
-                message: "Only admin can delete products",
-            });
-        }
-
         const { id } = req.params;
 
         if (!id) {
@@ -2005,6 +2263,7 @@ app.get("/products", async (req, res) => {
 app.patch(
   "/admin/products/:id",
   verifyToken,
+  verifyAdmin,
 
   upload.fields([
     { name: "image1", maxCount: 1 },
@@ -2289,8 +2548,7 @@ app.patch(
       ) {
         const file = req.files.image1[0];
 
-        images[0] =
-          `/uploads/${file.filename}`;
+        images[0] = await uploadToCloudinary(file.path, "kolystore/products");
       }
 
       // =====================================================
@@ -2303,8 +2561,7 @@ app.patch(
       ) {
         const file = req.files.image2[0];
 
-        images[1] =
-          `/uploads/${file.filename}`;
+        images[1] = await uploadToCloudinary(file.path, "kolystore/products");
       }
 
       // =====================================================
@@ -2317,8 +2574,7 @@ app.patch(
       ) {
         const file = req.files.image3[0];
 
-        images[2] =
-          `/uploads/${file.filename}`;
+        images[2] = await uploadToCloudinary(file.path, "kolystore/products");
       }
 
       // =====================================================
@@ -2480,6 +2736,7 @@ app.patch(
 app.patch(
   "/admin/products/:id/stock-status",
   verifyToken,
+  verifyAdmin,
   async (req, res) => {
     try {
       // Check login
@@ -3840,7 +4097,7 @@ app.get("/customer-only", verifyToken, async (req, res) => {
 // ADMIN - GET ALL ORDERS
 // =========================================================
 
-app.get("/admin/orders", verifyToken, async (req, res) => {
+app.get("/admin/orders", verifyToken, verifyAdmin, async (req, res) => {
     try {
         const userId = req.user.userId;
 
@@ -3929,6 +4186,7 @@ app.get("/admin/orders", verifyToken, async (req, res) => {
 app.patch(
     "/admin/orders/:id/status",
     verifyToken,
+    verifyAdmin,
     async (req, res) => {
         try {
             if (
@@ -4118,6 +4376,7 @@ app.patch(
 app.delete(
     "/admin/orders/:id",
     verifyToken,
+    verifyAdmin,
     async (req, res) => {
         try {
             if (
@@ -4297,7 +4556,7 @@ app.delete(
       };
     };
 
-    app.get("/admin/dashboard", verifyToken, async (req, res) => {
+    app.get("/admin/dashboard", verifyToken, verifyAdmin, async (req, res) => {
       try {
         if (
           !req.user?.role ||
@@ -4387,6 +4646,7 @@ app.delete(
                   total: 1,
                   createdAt: 1,
                   userId: 1,
+                  customer: 1,
                   orderStatus: 1,
                   status: 1,
                 },
@@ -4444,12 +4704,30 @@ app.delete(
             orderStatusCounts.pending += 1;
           }
 
+          const createdAt = getOrderDate(order);
+
+          // Track today's unique customers as soon as an order is placed (non-cancelled)
+          if (createdAt && status !== "cancelled") {
+            const orderKey = getDateKeyInTimeZone(createdAt, timeZone);
+            if (orderKey === todayKey) {
+              const customerId = order.userId
+                ? String(order.userId)
+                : order.customer?.email
+                ? String(order.customer.email).trim().toLowerCase()
+                : order.customer?.phone
+                ? String(order.customer.phone).trim()
+                : null;
+              if (customerId) {
+                todayCustomerIds.add(customerId);
+              }
+            }
+          }
+
           if (isCancelledStatus(order)) {
             continue;
           }
 
           const total = getOrderTotal(order);
-          const createdAt = getOrderDate(order);
 
           totalSales += total;
 
@@ -4465,9 +4743,6 @@ app.delete(
 
           if (orderKey === todayKey) {
             todaySales += total;
-            if (order.userId) {
-              todayCustomerIds.add(String(order.userId));
-            }
           }
 
           if (orderKey.slice(0, 7) === currentMonthKey) {
