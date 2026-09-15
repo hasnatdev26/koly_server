@@ -57,18 +57,41 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 const mailUser = (process.env.NODEMAILER_USER || "").trim();
-const mailPass = (process.env.NODEMAILER_PASS || "").replace(/\s/g, "");
+const mailService = (process.env.MAIL_SERVICE || "gmail").trim().toLowerCase();
+// Gmail app passwords are often displayed with spaces, whereas an SMTP
+// password (for example a cPanel mailbox) must be kept exactly as entered.
+const mailPass = mailService === "gmail"
+  ? (process.env.NODEMAILER_PASS || "").replace(/\s/g, "")
+  : (process.env.NODEMAILER_PASS || "").trim();
+const smtpHost = (process.env.SMTP_HOST || "").trim();
+const smtpPort = Number(process.env.SMTP_PORT || 465);
+const smtpSecure = process.env.SMTP_SECURE
+  ? process.env.SMTP_SECURE === "true"
+  : smtpPort === 465;
 
 const mailTransporter =
   mailUser && mailPass
     ? nodemailer.createTransport({
-        service: "gmail",
+        ...(smtpHost
+          ? { host: smtpHost, port: smtpPort, secure: smtpSecure }
+          : { service: "gmail" }),
         auth: {
           user: mailUser,
           pass: mailPass,
         },
       })
     : null;
+
+if (!mailTransporter) {
+  console.warn("Email is disabled: NODEMAILER_USER and NODEMAILER_PASS are required.");
+} else {
+  // This runs at app startup, so cPanel's Node.js application log shows a
+  // concrete SMTP error instead of silently failing after an order is placed.
+  mailTransporter.verify().then(
+    () => console.log(`Email SMTP connection verified (${smtpHost || "Gmail"}).`),
+    (error) => console.error("Email SMTP connection failed:", error.message)
+  );
+}
 
 const resolveAdminEmail = async () => {
   if (usersCollection) {
@@ -99,7 +122,7 @@ const sendEmail = async ({ to, subject, text }) => {
 
   try {
     await mailTransporter.sendMail({
-      from: `KolyStore <${mailUser}>`,
+      from: process.env.MAIL_FROM || `KolyStore <${mailUser}>`,
       to: recipient,
       subject,
       text,
@@ -119,11 +142,33 @@ let usersCollection;
 // MIDDLEWARE
 // =====================================================
 
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost:3000",
+  "https://kolystore.com",
+  "https://kolystore.com",
+  "https://www.kolystore.com",
+  "https://www.kolystore.com",
+  "https://api.kolystore.com",
+  "https://api.kolystore.com",
+];
+
+if (process.env.CLIENT_URL) allowedOrigins.push(process.env.CLIENT_URL);
+if (process.env.FRONTEND_URL) allowedOrigins.push(process.env.FRONTEND_URL);
+
 const corsOptions = {
-  origin: [
-    "http://localhost:5173",
-    "http://localhost:5174",
-  ],
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.includes("kolystore.com") ||
+      origin.includes("localhost")
+    ) {
+      return callback(null, origin);
+    }
+    return callback(null, origin);
+  },
 
   credentials: true,
 
@@ -286,7 +331,13 @@ const upload = multer({
 // =====================================================
 
 const verifyToken = (req, res, next) => {
-  const token = req.cookies?.token;
+  const authHeader = req.headers.authorization || req.headers.Authorization;
+  const bearerToken =
+    authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.split(" ")[1]
+      : null;
+
+  const token = bearerToken || req.cookies?.token;
 
   if (!token) {
     return res.status(401).send({
@@ -914,6 +965,11 @@ async function run() {
             message:
               "Account created successfully",
 
+            // The frontend uses this token for Authorization headers. Returning
+            // it also makes authentication reliable when browsers reject a
+            // cross-subdomain cookie.
+            token,
+
             user: {
               userId:
                 result.insertedId,
@@ -1086,6 +1142,10 @@ async function run() {
 
             message:
               "Login successful",
+
+            // Keep bearer-token authentication available in addition to the
+            // HttpOnly cookie set above.
+            token,
 
             user: {
               userId:
@@ -4848,14 +4908,11 @@ app.delete(
   } catch (error) {
 
     console.error(
-      "MongoDB Connection Error:",
+      "MongoDB Connection Errors",
       error
     );
   }
 }
 
-// =====================================================
-// RUN SERVER
-// =====================================================
 
 run();
