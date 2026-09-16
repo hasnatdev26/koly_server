@@ -58,28 +58,44 @@ const port = process.env.PORT || 5000;
 
 const mailUser = (process.env.NODEMAILER_USER || "").trim();
 const mailService = (process.env.MAIL_SERVICE || "gmail").trim().toLowerCase();
-// Gmail app passwords are often displayed with spaces, whereas an SMTP
-// password (for example a cPanel mailbox) must be kept exactly as entered.
+
 const mailPass = mailService === "gmail"
   ? (process.env.NODEMAILER_PASS || "").replace(/\s/g, "")
   : (process.env.NODEMAILER_PASS || "").trim();
+
 const smtpHost = (process.env.SMTP_HOST || "").trim();
-const smtpPort = Number(process.env.SMTP_PORT || 465);
+const smtpPort = Number(process.env.SMTP_PORT || (mailService === "cpanel" ? 465 : 465));
 const smtpSecure = process.env.SMTP_SECURE
   ? process.env.SMTP_SECURE === "true"
   : smtpPort === 465;
 
+const transportOptions = smtpHost
+  ? {
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: {
+        user: mailUser,
+        pass: mailPass,
+      },
+      tls: {
+        rejectUnauthorized: false,
+      },
+    }
+  : {
+      service: "gmail",
+      auth: {
+        user: mailUser,
+        pass: mailPass,
+      },
+      tls: {
+        rejectUnauthorized: false,
+      },
+    };
+
 const mailTransporter =
   mailUser && mailPass
-    ? nodemailer.createTransport({
-        ...(smtpHost
-          ? { host: smtpHost, port: smtpPort, secure: smtpSecure }
-          : { service: "gmail" }),
-        auth: {
-          user: mailUser,
-          pass: mailPass,
-        },
-      })
+    ? nodemailer.createTransport(transportOptions)
     : null;
 
 if (!mailTransporter) {
@@ -108,7 +124,7 @@ const resolveAdminEmail = async () => {
   return fromEnv || null;
 };
 
-const sendEmail = async ({ to, subject, text }) => {
+const sendEmail = async ({ to, subject, text, html }) => {
   const recipient = typeof to === "string" ? to.trim() : "";
   if (!mailTransporter || !recipient) {
     if (!mailTransporter && recipient) {
@@ -126,6 +142,7 @@ const sendEmail = async ({ to, subject, text }) => {
       to: recipient,
       subject,
       text,
+      html,
     });
   } catch (error) {
     // Email delivery must not undo a completed signup or order.
@@ -150,8 +167,8 @@ const allowedOrigins = [
   "https://kolystore.com",
   "https://www.kolystore.com",
   "https://www.kolystore.com",
-  "https://api.kolystore.com",
-  "https://api.kolystore.com",
+  "http://localhost:5000",
+  "http://localhost:5000",
 ];
 
 if (process.env.CLIENT_URL) allowedOrigins.push(process.env.CLIENT_URL);
@@ -594,6 +611,141 @@ async function run() {
     const ordersCollection =
       db.collection("orders");
 
+    const contactMessagesCollection =
+      db.collection("contactMessages");
+
+    const productQuestionsCollection =
+      db.collection("productQuestions");
+
+    // =====================================================
+    // CONTACT US ROUTE
+    // =====================================================
+
+    app.post("/contact-us", async (req, res) => {
+      try {
+        const { name, email, phone, subject, message } = req.body || {};
+
+        if (!name || !email || !message) {
+          return res.status(400).send({
+            success: false,
+            message: "Name, email, and message are required.",
+          });
+        }
+
+        const adminEmail = await resolveAdminEmail();
+        const targetEmail = adminEmail || "info@kolystore.com";
+
+        const newMessage = {
+          name: String(name).trim(),
+          email: String(email).trim(),
+          phone: String(phone || "").trim(),
+          subject: String(subject || "").trim(),
+          message: String(message).trim(),
+          createdAt: new Date(),
+          status: "unread",
+        };
+
+        await contactMessagesCollection.insertOne(newMessage);
+
+        const emailText = `
+You have received a new contact message on KolyStore:
+
+Name: ${newMessage.name}
+Email: ${newMessage.email}
+Phone: ${newMessage.phone || "N/A"}
+Subject: ${newMessage.subject || "N/A"}
+
+Message:
+${newMessage.message}
+
+Received at: ${new Date().toLocaleString()}
+`;
+
+        await sendEmail({
+          to: targetEmail,
+          subject: `[KolyStore Contact] ${newMessage.subject || "New Message from " + newMessage.name}`,
+          text: emailText,
+        });
+
+        return res.status(200).send({
+          success: true,
+          message: "Thank you! Your message has been sent successfully.",
+        });
+      } catch (error) {
+        console.error("CONTACT US ERROR:", error);
+        return res.status(500).send({
+          success: false,
+          message: "Could not send message. Please try again later.",
+        });
+      }
+    });
+
+    // =====================================================
+    // PRODUCT QUESTIONS ROUTE
+    // =====================================================
+
+    app.post("/product-questions", async (req, res) => {
+      try {
+        const { name, email, phone, productName, productId, question } = req.body || {};
+
+        if (!question || !productName) {
+          return res.status(400).send({
+            success: false,
+            message: "Question and product name are required.",
+          });
+        }
+
+        const adminEmail = await resolveAdminEmail();
+        const targetEmail = adminEmail || "info@kolystore.com";
+
+        const newQuestion = {
+          name: String(name || "Anonymous").trim(),
+          email: String(email || "").trim(),
+          phone: String(phone || "").trim(),
+          productName: String(productName).trim(),
+          productId: String(productId || "").trim(),
+          question: String(question).trim(),
+          createdAt: new Date(),
+          status: "pending",
+        };
+
+        await productQuestionsCollection.insertOne(newQuestion);
+
+        const emailText = `
+You have received a new product question on KolyStore:
+
+Product Name: ${newQuestion.productName}
+Product ID: ${newQuestion.productId || "N/A"}
+
+Customer Name: ${newQuestion.name}
+Customer Email: ${newQuestion.email || "N/A"}
+Customer Phone: ${newQuestion.phone || "N/A"}
+
+Question:
+${newQuestion.question}
+
+Received at: ${new Date().toLocaleString()}
+`;
+
+        await sendEmail({
+          to: targetEmail,
+          subject: `[KolyStore Question] Product Question: ${newQuestion.productName}`,
+          text: emailText,
+        });
+
+        return res.status(200).send({
+          success: true,
+          message: "Thank you! Your question has been submitted successfully.",
+        });
+      } catch (error) {
+        console.error("PRODUCT QUESTION ERROR:", error);
+        return res.status(500).send({
+          success: false,
+          message: "Could not submit question. Please try again later.",
+        });
+      }
+    });
+
     // =================================================
     // USER INDEXES
     // =================================================
@@ -938,14 +1090,247 @@ async function run() {
           // RESPONSE
           // ---------------------------------------------
 
-          void sendEmail({
-            to: user.email,
-            subject: "Welcome to KolyStore",
-            text:
-              `Hello ${user.name},\n\n` +
-              "Welcome to KolyStore! Your account has been created successfully.\n\n" +
-              `Customer ID: ${user.customerId}`,
-          });
+    void sendEmail({
+  to: user.email,
+  subject: "Welcome to KOLY STORE 🎉",
+  html: `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <style>
+          body {
+            margin: 0;
+            padding: 0;
+            background: #f5f7f4;
+            font-family: Arial, Helvetica, sans-serif;
+          }
+
+          .wrapper {
+            width: 100%;
+            padding: 30px 15px;
+            background: #f5f7f4;
+          }
+
+          .container {
+            width: 100%;
+            max-width: 600px;
+            margin: auto;
+            background: #ffffff;
+            border-radius: 16px;
+            overflow: hidden;
+          }
+
+          .header {
+            background: #498520;
+            padding: 30px 20px;
+            text-align: center;
+          }
+
+          .logo {
+            margin: 0;
+            color: #ffffff;
+            font-size: 28px;
+            font-weight: 700;
+          }
+
+          .content {
+            padding: 35px 30px;
+          }
+
+          .title {
+            color: #222222;
+            font-size: 24px;
+            margin: 0 0 15px;
+          }
+
+          .text {
+            color: #555555;
+            font-size: 15px;
+            line-height: 1.7;
+          }
+
+          .card {
+            margin: 25px 0;
+            padding: 20px;
+            background: #f7faf5;
+            border: 1px solid #dcebd4;
+            border-radius: 12px;
+          }
+
+          .card-title {
+            margin: 0 0 15px;
+            color: #498520;
+            font-size: 17px;
+          }
+
+          .info {
+            margin: 10px 0;
+            color: #555555;
+            font-size: 14px;
+          }
+
+          .button-wrapper {
+            text-align: center;
+            margin: 30px 0;
+          }
+
+          .button {
+            display: inline-block;
+            padding: 14px 28px;
+            background: #498520;
+            color: #ffffff !important;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+          }
+
+          .footer {
+            padding: 22px 20px;
+            text-align: center;
+            background: #f8f8f8;
+            border-top: 1px solid #eeeeee;
+          }
+
+          .footer-logo {
+            color: #498520;
+            font-size: 17px;
+            font-weight: 700;
+            margin: 0 0 8px;
+          }
+
+          .footer-text {
+            color: #888888;
+            font-size: 12px;
+            margin: 0;
+          }
+
+          @media only screen and (max-width: 480px) {
+            .wrapper {
+              padding: 10px 5px;
+            }
+
+            .container {
+              border-radius: 10px;
+            }
+
+            .header {
+              padding: 24px 15px;
+            }
+
+            .logo {
+              font-size: 23px;
+            }
+
+            .content {
+              padding: 25px 18px;
+            }
+
+            .title {
+              font-size: 21px;
+            }
+
+            .text {
+              font-size: 14px;
+            }
+
+            .card {
+              padding: 17px 14px;
+            }
+
+            .button {
+              display: block;
+              width: 100%;
+              padding: 14px 0;
+            }
+          }
+        </style>
+      </head>
+
+      <body>
+        <div class="wrapper">
+          <div class="container">
+
+            <div class="header">
+              <h1 class="logo">KOLY STORE</h1>
+            </div>
+
+            <div class="content">
+
+              <h2 class="title">
+                Welcome, ${user.name}! 
+              </h2>
+
+              <p class="text">
+                Thank you for joining <strong>KOLY STORE</strong>.
+                Your account has been created successfully.
+              </p>
+
+              <div class="card">
+
+                <h3 class="card-title">
+                  Account Information
+                </h3>
+
+                <p class="info">
+                  <strong>Name:</strong> ${user.name}
+                </p>
+
+                <p class="info">
+                  <strong>Email:</strong> ${user.email}
+                </p>
+
+                <p class="info">
+                  <strong>Customer ID:</strong> ${user.customerId}
+                </p>
+
+              </div>
+
+              <p class="text">
+                You can now access your account and explore our products.
+                We hope you enjoy shopping with us!
+              </p>
+
+              <div class="button-wrapper">
+                <a
+                  href="https://kolystore.com"
+                  class="button"
+                  target="_blank"
+                >
+                  Visit KOLY STORE
+                </a>
+              </div>
+
+              <p class="text">
+                If you have any questions or need assistance,
+                please feel free to contact our support team.
+              </p>
+
+            </div>
+
+            <div class="footer">
+              <p class="footer-logo">
+                KOLY STORE
+              </p>
+
+              <p class="footer-text">
+                Thank you for choosing KOLY STORE.
+              </p>
+
+              <p class="footer-text">
+                © ${new Date().getFullYear()} KOLY STORE.
+                All rights reserved.
+              </p>
+            </div>
+
+          </div>
+        </div>
+      </body>
+    </html>
+  `.trim(),
+});
 
           const adminEmail = await resolveAdminEmail();
           if (adminEmail) {
@@ -4051,22 +4436,531 @@ app.post("/orders", verifyToken, async (req, res) => {
     const customerEmail =
       typeof user.email === "string" ? user.email.trim() : "";
 
-    if (customerEmail) {
-      void sendEmail({
-        to: customerEmail,
-        subject: `Order confirmation ${orderId} – KolyStore`,
-        text:
-          `Hello ${user.name || "Customer"},\n\n` +
-          "Thank you for your order! We have received it successfully.\n\n" +
-          `Order ID: ${orderId}\n` +
-          `Total: ${total}\n` +
-          `Payment: ${paymentMethod}\n` +
-          `Status: pending verification\n\n` +
-          `Delivery address:\n${finalAddress}\n\n` +
-          `Items:\n${itemsSummary}\n\n` +
-          "We will notify you when your payment is confirmed.",
-      });
+   if (customerEmail) {
+  void sendEmail({
+    to: customerEmail,
+    subject: `Order Confirmation ${orderId} – KOLY STORE`,
+
+    text:
+      `Hello ${user.name || "Customer"},\n\n` +
+      "Thank you for your order! We have received it successfully.\n\n" +
+      `Order ID: ${orderId}\n` +
+      `Total: ${total}\n` +
+      `Payment: ${paymentMethod}\n` +
+      `Status: Pending\n\n` +
+      `Delivery Address:\n${finalAddress}\n\n` +
+      `Items:\n${itemsSummary}\n\n` +
+      "We will notify you when your payment is confirmed.\n\n" +
+      "Thank you for shopping with KOLY STORE.",
+
+    html: `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <style>
+    * {
+      box-sizing: border-box;
     }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #f5f7f4;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .wrapper {
+      width: 100%;
+      padding: 35px 15px;
+      background-color: #f5f7f4;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 600px;
+      margin: 0 auto;
+      background-color: #ffffff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.07);
+    }
+
+    /* Header */
+    .header {
+      background-color: #498520;
+      padding: 30px 20px;
+      text-align: center;
+    }
+
+    .logo {
+      margin: 0;
+      color: #ffffff;
+      font-size: 27px;
+      line-height: 1.3;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+
+    .header-text {
+      margin: 8px 0 0;
+      color: #eaf5e3;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* Content */
+    .content {
+      padding: 35px 30px;
+    }
+
+    .success-icon {
+      width: 55px;
+      height: 55px;
+      margin: 0 auto 20px;
+      border-radius: 50%;
+      background-color: #edf7e8;
+      color: #498520;
+      font-size: 28px;
+      line-height: 55px;
+      text-align: center;
+    }
+
+    .title {
+      margin: 0 0 12px;
+      color: #222222;
+      font-size: 23px;
+      line-height: 1.4;
+      text-align: center;
+    }
+
+    .intro {
+      margin: 0 0 25px;
+      color: #555555;
+      font-size: 15px;
+      line-height: 1.7;
+      text-align: center;
+    }
+
+    /* Order Summary */
+    .order-card {
+      margin: 25px 0;
+      padding: 22px;
+      background-color: #f7faf5;
+      border: 1px solid #dcebd4;
+      border-radius: 12px;
+    }
+
+    .section-title {
+      margin: 0 0 18px;
+      color: #498520;
+      font-size: 17px;
+      line-height: 1.4;
+      font-weight: 700;
+    }
+
+    .row {
+      padding: 9px 0;
+      border-bottom: 1px solid #e5edde;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .row:last-child {
+      border-bottom: none;
+    }
+
+    .label {
+      color: #555555;
+      font-weight: 600;
+    }
+
+    .value {
+      color: #222222;
+      float: right;
+      text-align: right;
+      max-width: 60%;
+      word-break: break-word;
+    }
+
+    .status {
+      color: #d97706;
+      font-weight: 700;
+    }
+
+    /* Address */
+    .address-card {
+      margin: 25px 0;
+      padding: 20px;
+      background-color: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+    }
+
+    .address {
+      margin: 0;
+      color: #555555;
+      font-size: 14px;
+      line-height: 1.7;
+      word-break: break-word;
+    }
+
+    /* Items */
+    .items-card {
+      margin: 25px 0;
+      padding: 20px;
+      background-color: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+    }
+
+    .items {
+      margin: 0;
+      color: #555555;
+      font-size: 14px;
+      line-height: 1.7;
+      white-space: pre-line;
+      word-break: break-word;
+    }
+
+    /* Notice */
+    .notice {
+      margin: 25px 0;
+      padding: 16px 18px;
+      background-color: #fff8e8;
+      border-left: 4px solid #f59e0b;
+      border-radius: 6px;
+    }
+
+    .notice p {
+      margin: 0;
+      color: #6b5b35;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    /* Button */
+    .button-wrapper {
+      margin: 30px 0;
+      text-align: center;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 14px 28px;
+      background-color: #498520;
+      color: #ffffff !important;
+      text-decoration: none;
+      border-radius: 8px;
+      font-size: 15px;
+      line-height: 1.3;
+      font-weight: 600;
+    }
+
+    /* Footer */
+    .footer {
+      padding: 24px 25px;
+      background-color: #f8f8f8;
+      border-top: 1px solid #eeeeee;
+      text-align: center;
+    }
+
+    .footer-logo {
+      margin: 0 0 8px;
+      color: #498520;
+      font-size: 17px;
+      font-weight: 700;
+    }
+
+    .footer-text {
+      margin: 0 0 6px;
+      color: #888888;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .copyright {
+      margin: 0;
+      color: #aaaaaa;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    /* Tablet */
+    @media only screen and (max-width: 768px) {
+      .wrapper {
+        padding: 25px 12px;
+      }
+
+      .content {
+        padding: 30px 25px;
+      }
+    }
+
+    /* Mobile */
+    @media only screen and (max-width: 480px) {
+      .wrapper {
+        padding: 10px 5px;
+      }
+
+      .container {
+        border-radius: 10px;
+      }
+
+      .header {
+        padding: 24px 15px;
+      }
+
+      .logo {
+        font-size: 23px;
+      }
+
+      .header-text {
+        font-size: 12px;
+      }
+
+      .content {
+        padding: 25px 17px;
+      }
+
+      .success-icon {
+        width: 48px;
+        height: 48px;
+        line-height: 48px;
+        font-size: 23px;
+      }
+
+      .title {
+        font-size: 20px;
+      }
+
+      .intro {
+        font-size: 14px;
+      }
+
+      .order-card,
+      .address-card,
+      .items-card {
+        padding: 16px;
+      }
+
+      .section-title {
+        font-size: 16px;
+      }
+
+      .row {
+        font-size: 13px;
+      }
+
+      .value {
+        max-width: 55%;
+      }
+
+      .address,
+      .items {
+        font-size: 13px;
+      }
+
+      .button {
+        display: block;
+        width: 100%;
+        padding: 14px 10px;
+      }
+
+      .footer {
+        padding: 20px 15px;
+      }
+    }
+
+    /* Small Mobile */
+    @media only screen and (max-width: 360px) {
+      .content {
+        padding: 22px 13px;
+      }
+
+      .title {
+        font-size: 19px;
+      }
+
+      .row {
+        font-size: 12px;
+      }
+
+      .value {
+        max-width: 52%;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="wrapper">
+
+    <div class="container">
+
+      <!-- HEADER -->
+      <div class="header">
+
+        <h1 class="logo">
+          KOLY STORE
+        </h1>
+
+        <p class="header-text">
+          Your trusted online store
+        </p>
+
+      </div>
+
+
+      <!-- CONTENT -->
+      <div class="content">
+
+        <div class="success-icon">
+          ✓
+        </div>
+
+        <h2 class="title">
+          Order Received Successfully!
+        </h2>
+
+        <p class="intro">
+          Hello <strong>${user.name || "Customer"}</strong>,
+          thank you for your order. We have received your order successfully
+          and it is now pending payment verification.
+        </p>
+
+
+        <!-- ORDER SUMMARY -->
+        <div class="order-card">
+
+          <h3 class="section-title">
+            Order Summary
+          </h3>
+
+          <div class="row">
+            <span class="label">Order ID</span>
+            <span class="value">${orderId}</span>
+          </div>
+
+          <div class="row">
+            <span class="label">Total</span>
+            <span class="value">${total}</span>
+          </div>
+
+          <div class="row">
+            <span class="label">Payment</span>
+            <span class="value">${paymentMethod}</span>
+          </div>
+
+          <div class="row">
+            <span class="label">Status</span>
+            <span class="value status">
+              Pending
+            </span>
+          </div>
+
+        </div>
+
+
+        <!-- DELIVERY ADDRESS -->
+        <div class="address-card">
+
+          <h3 class="section-title">
+            Delivery Address
+          </h3>
+
+          <p class="address">
+            ${finalAddress}
+          </p>
+
+        </div>
+
+
+        <!-- ORDER ITEMS -->
+        <div class="items-card">
+
+          <h3 class="section-title">
+            Order Items
+          </h3>
+
+          <p class="items">
+            ${itemsSummary}
+          </p>
+
+        </div>
+
+
+        <!-- NOTICE -->
+        <div class="notice">
+
+          <p>
+            <strong>Payment Verification:</strong>
+            We will notify you once your payment has been confirmed.
+            Please keep your Order ID for future reference.
+          </p>
+
+        </div>
+
+
+        <!-- BUTTON -->
+        <div class="button-wrapper">
+
+          <a
+            href="https://kolystore.com"
+            class="button"
+            target="_blank"
+          >
+            Visit KOLY STORE
+          </a>
+
+        </div>
+
+
+        <p
+          style="
+            margin: 0;
+            color: #777777;
+            font-size: 13px;
+            line-height: 1.6;
+            text-align: center;
+          "
+        >
+          Thank you for shopping with KOLY STORE.
+        </p>
+
+      </div>
+
+
+      <!-- FOOTER -->
+      <div class="footer">
+
+        <p class="footer-logo">
+          KOLY STORE
+        </p>
+
+        <p class="footer-text">
+          Your trusted online store
+        </p>
+
+        <p class="copyright">
+          © ${new Date().getFullYear()} KOLY STORE.
+          All rights reserved.
+        </p>
+
+      </div>
+
+    </div>
+
+  </div>
+
+</body>
+</html>
+    `.trim(),
+  });
+}
 
     const adminEmail = await resolveAdminEmail();
     if (adminEmail) {
@@ -4416,19 +5310,513 @@ app.patch(
                     }
                 }
 
-                if (customerEmail) {
-                    void sendEmail({
-                        to: customerEmail,
-                        subject: `Order ${order.orderId || id} update – KolyStore`,
-                        text:
-                            `Hello ${customerName || "Customer"},\n\n` +
-                            "Your order status has been updated.\n\n" +
-                            `Order ID: ${order.orderId || id}\n` +
-                            `Previous status: ${formatStatusLabel(previousStatus)}\n` +
-                            `Current status: ${formatStatusLabel(nextStatus)}\n\n` +
-                            "Thank you for shopping with KolyStore.",
-                    });
-                }
+             if (customerEmail) {
+  void sendEmail({
+    to: customerEmail,
+    subject: `Order ${order.orderId || id} Update – KOLY STORE`,
+
+    text:
+      `Hello ${customerName || "Customer"},\n\n` +
+      "Your order status has been updated.\n\n" +
+      `Order ID: ${order.orderId || id}\n` +
+      `Previous Status: ${formatStatusLabel(previousStatus)}\n` +
+      `Current Status: ${formatStatusLabel(nextStatus)}\n\n` +
+      "Thank you for shopping with KOLY STORE.",
+
+    html: `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #f5f7f4;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    .wrapper {
+      width: 100%;
+      padding: 35px 15px;
+      background-color: #f5f7f4;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 600px;
+      margin: 0 auto;
+      background-color: #ffffff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.07);
+    }
+
+    /* Header */
+    .header {
+      padding: 30px 20px;
+      background-color: #498520;
+      text-align: center;
+    }
+
+    .logo {
+      margin: 0;
+      color: #ffffff;
+      font-size: 27px;
+      line-height: 1.3;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+
+    .header-text {
+      margin: 8px 0 0;
+      color: #eaf5e3;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* Content */
+    .content {
+      padding: 35px 30px;
+    }
+
+    .update-icon {
+      width: 55px;
+      height: 55px;
+      margin: 0 auto 20px;
+      border-radius: 50%;
+      background-color: #edf7e8;
+      color: #498520;
+      font-size: 27px;
+      line-height: 55px;
+      text-align: center;
+      font-weight: 700;
+    }
+
+    .title {
+      margin: 0 0 12px;
+      color: #222222;
+      font-size: 23px;
+      line-height: 1.4;
+      text-align: center;
+    }
+
+    .intro {
+      margin: 0 0 25px;
+      color: #555555;
+      font-size: 15px;
+      line-height: 1.7;
+      text-align: center;
+    }
+
+    /* Order Card */
+    .order-card {
+      margin: 25px 0;
+      padding: 22px;
+      background-color: #f7faf5;
+      border: 1px solid #dcebd4;
+      border-radius: 12px;
+    }
+
+    .section-title {
+      margin: 0 0 18px;
+      color: #498520;
+      font-size: 17px;
+      line-height: 1.4;
+      font-weight: 700;
+    }
+
+    .order-id {
+      margin: 0;
+      padding: 12px 14px;
+      background-color: #ffffff;
+      border-radius: 8px;
+      color: #222222;
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    /* Status */
+    .status-container {
+      margin: 25px 0;
+    }
+
+    .status-box {
+      width: 100%;
+      padding: 18px;
+      border-radius: 10px;
+      text-align: center;
+    }
+
+    .previous {
+      background-color: #f5f5f5;
+      border: 1px solid #e5e5e5;
+    }
+
+    .current {
+      margin-top: 12px;
+      background-color: #edf7e8;
+      border: 1px solid #cfe5c5;
+    }
+
+    .status-label {
+      margin: 0 0 7px;
+      color: #777777;
+      font-size: 12px;
+      line-height: 1.4;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+
+    .status-value {
+      margin: 0;
+      color: #333333;
+      font-size: 15px;
+      line-height: 1.5;
+      font-weight: 700;
+      word-break: break-word;
+    }
+
+    .current .status-value {
+      color: #498520;
+    }
+
+    .arrow {
+      margin: 10px 0;
+      color: #498520;
+      font-size: 20px;
+      text-align: center;
+    }
+
+    /* Notice */
+    .notice {
+      margin: 25px 0;
+      padding: 16px 18px;
+      background-color: #f7faf5;
+      border-left: 4px solid #498520;
+      border-radius: 6px;
+    }
+
+    .notice p {
+      margin: 0;
+      color: #5f665c;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    /* Button */
+    .button-wrapper {
+      margin: 30px 0;
+      text-align: center;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 14px 28px;
+      background-color: #498520;
+      color: #ffffff !important;
+      text-decoration: none;
+      border-radius: 8px;
+      font-size: 15px;
+      line-height: 1.3;
+      font-weight: 600;
+    }
+
+    /* Footer */
+    .footer {
+      padding: 24px 25px;
+      background-color: #f8f8f8;
+      border-top: 1px solid #eeeeee;
+      text-align: center;
+    }
+
+    .footer-logo {
+      margin: 0 0 8px;
+      color: #498520;
+      font-size: 17px;
+      line-height: 1.4;
+      font-weight: 700;
+    }
+
+    .footer-text {
+      margin: 0 0 6px;
+      color: #888888;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .copyright {
+      margin: 0;
+      color: #aaaaaa;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    /* Tablet */
+    @media only screen and (max-width: 768px) {
+      .wrapper {
+        padding: 25px 12px;
+      }
+
+      .content {
+        padding: 30px 25px;
+      }
+    }
+
+    /* Mobile */
+    @media only screen and (max-width: 480px) {
+      .wrapper {
+        padding: 10px 5px;
+      }
+
+      .container {
+        border-radius: 10px;
+      }
+
+      .header {
+        padding: 24px 15px;
+      }
+
+      .logo {
+        font-size: 23px;
+      }
+
+      .header-text {
+        font-size: 12px;
+      }
+
+      .content {
+        padding: 25px 17px;
+      }
+
+      .update-icon {
+        width: 48px;
+        height: 48px;
+        line-height: 48px;
+        font-size: 23px;
+      }
+
+      .title {
+        font-size: 20px;
+      }
+
+      .intro {
+        font-size: 14px;
+      }
+
+      .order-card {
+        padding: 17px;
+      }
+
+      .section-title {
+        font-size: 16px;
+      }
+
+      .status-box {
+        padding: 16px 12px;
+      }
+
+      .status-value {
+        font-size: 14px;
+      }
+
+      .button {
+        display: block;
+        width: 100%;
+        padding: 14px 10px;
+      }
+
+      .footer {
+        padding: 20px 15px;
+      }
+    }
+
+    /* Small Mobile */
+    @media only screen and (max-width: 360px) {
+      .content {
+        padding: 22px 13px;
+      }
+
+      .title {
+        font-size: 19px;
+      }
+
+      .intro {
+        font-size: 13px;
+      }
+
+      .order-id,
+      .status-value {
+        font-size: 12px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="wrapper">
+
+    <div class="container">
+
+      <!-- HEADER -->
+      <div class="header">
+
+        <h1 class="logo">
+          KOLY STORE
+        </h1>
+
+        <p class="header-text">
+          Your trusted online store
+        </p>
+
+      </div>
+
+
+      <!-- CONTENT -->
+      <div class="content">
+
+        <div class="update-icon">
+          ✓
+        </div>
+
+        <h2 class="title">
+          Order Status Updated
+        </h2>
+
+        <p class="intro">
+          Hello <strong>${customerName || "Customer"}</strong>,
+          your order status has been successfully updated.
+        </p>
+
+
+        <!-- ORDER INFORMATION -->
+        <div class="order-card">
+
+          <h3 class="section-title">
+            Order Information
+          </h3>
+
+          <p class="order-id">
+            <strong>Order ID:</strong>
+            ${order.orderId || id}
+          </p>
+
+        </div>
+
+
+        <!-- STATUS CHANGE -->
+        <div class="status-container">
+
+          <div class="status-box previous">
+
+            <p class="status-label">
+              Previous Status
+            </p>
+
+            <p class="status-value">
+              ${formatStatusLabel(previousStatus)}
+            </p>
+
+          </div>
+
+          <div class="arrow">
+            ↓
+          </div>
+
+          <div class="status-box current">
+
+            <p class="status-label">
+              Current Status
+            </p>
+
+            <p class="status-value">
+              ${formatStatusLabel(nextStatus)}
+            </p>
+
+          </div>
+
+        </div>
+
+
+        <!-- NOTICE -->
+        <div class="notice">
+
+          <p>
+            Your order is being processed according to the updated status.
+            We will keep you informed about any further updates.
+          </p>
+
+        </div>
+
+
+        <!-- BUTTON -->
+        <div class="button-wrapper">
+
+          <a
+            href="https://kolystore.com"
+            class="button"
+            target="_blank"
+          >
+            Visit KOLY STORE
+          </a>
+
+        </div>
+
+
+        <p
+          style="
+            margin: 0;
+            color: #777777;
+            font-size: 13px;
+            line-height: 1.6;
+            text-align: center;
+          "
+        >
+          Thank you for shopping with KOLY STORE.
+        </p>
+
+      </div>
+
+
+      <!-- FOOTER -->
+      <div class="footer">
+
+        <p class="footer-logo">
+          KOLY STORE
+        </p>
+
+        <p class="footer-text">
+          Your trusted online store
+        </p>
+
+        <p class="copyright">
+          © ${new Date().getFullYear()} KOLY STORE.
+          All rights reserved.
+        </p>
+
+      </div>
+
+    </div>
+
+  </div>
+
+</body>
+</html>
+    `.trim(),
+  });
+}
             }
 
             return res.status(200).send({
