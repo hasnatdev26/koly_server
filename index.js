@@ -622,6 +622,10 @@ async function run() {
       { unique: true }
     );
 
+    // The storefront always shows newest products first. This index keeps that
+    // public query fast as the catalogue grows.
+    await productsCollection.createIndex({ createdAt: -1 });
+
     await wishlistCollection.createIndex(
       { userId: 1, productId: 1 },
       { unique: true }
@@ -2090,6 +2094,7 @@ app.post(
 
 app.get("/categories", async (req, res) => {
     try {
+        res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
         const categories = [
             "Seeds",
             "Plants",
@@ -2116,10 +2121,33 @@ app.get("/categories", async (req, res) => {
 
 app.get("/products", async (req, res) => {
   try {
+    const isSummaryRequest = req.query.summary === "1";
+    const projection = isSummaryRequest
+      ? {
+          productName: 1,
+          images: 1,
+          price: 1,
+          discountedPrice: 1,
+          discount: 1,
+          category: 1,
+          productId: 1,
+          sku: 1,
+          quantity: 1,
+          stockStatus: 1,
+          createdAt: 1,
+        }
+      : undefined;
+
     const products = await productsCollection
-      .find({})
+      .find({}, projection ? { projection } : {})
       .sort({ createdAt: -1 })
       .toArray();
+
+    // Product cards are public data. Browser/CDN caching makes a repeat visit
+    // instant while stale-while-revalidate keeps the list fresh in background.
+    if (isSummaryRequest) {
+      res.set("Cache-Control", "public, max-age=120, stale-while-revalidate=300");
+    }
 
     return res.send({
       success: true,
@@ -4102,36 +4130,35 @@ app.post("/orders", verifyToken, async (req, res) => {
 
 app.get("/customer-only", verifyToken, async (req, res) => {
   try {
-    // Check customer role
-    if (
-      !req.user?.role ||
-      req.user.role.toLowerCase() !== "customer"
-    ) {
-      return res.status(403).send({
-        success: false,
-        message: "Forbidden access",
-      });
-    }
+    // Logged-in user ID & email
+    const userId = req.user?.userId;
+    const userEmail = req.user?.email;
 
-    // Logged-in customer ID
-    const userId = req.user.userId;
-
-    if (!userId || !ObjectId.isValid(userId)) {
+    if (!userId) {
       return res.status(401).send({
         success: false,
         message: "Invalid user authentication",
       });
     }
 
-    // Get customer's orders
+    const queryFilter = {
+      $or: [
+        { userId: userId },
+        { userId: String(userId) },
+        ...(userEmail ? [{ "customer.email": userEmail }] : []),
+        ...(userEmail ? [{ email: userEmail }] : []),
+      ],
+    };
+
+    // Get user's orders
     const orders = await ordersCollection
-      .find({ userId: userId })
+      .find(queryFilter)
       .sort({ createdAt: -1 })
       .toArray();
 
     return res.status(200).send({
       success: true,
-      message: "Welcome Customer",
+      message: "Customer orders loaded successfully",
       userId: userId,
       count: orders.length,
       orders: orders,
