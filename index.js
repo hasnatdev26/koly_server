@@ -167,8 +167,8 @@ const allowedOrigins = [
   "https://kolystore.com",
   "https://www.kolystore.com",
   "https://www.kolystore.com",
-  "http://localhost:5000",
-  "http://localhost:5000",
+  "https://api.kolystore.com",
+  "https://api.kolystore.com",
 ];
 
 if (process.env.CLIENT_URL) allowedOrigins.push(process.env.CLIENT_URL);
@@ -1331,23 +1331,435 @@ Received at: ${new Date().toLocaleString()}
     </html>
   `.trim(),
 });
+const adminEmail = await resolveAdminEmail();
 
-          const adminEmail = await resolveAdminEmail();
-          if (adminEmail) {
-            void sendEmail({
-              to: adminEmail,
-              subject: "New KolyStore customer signup",
-              text:
-                "A new customer has signed up.\n\n" +
-                `Name: ${user.name}\nEmail: ${user.email}\n` +
-                `Phone: ${user.phone}\nCustomer ID: ${user.customerId}`,
-            });
-          } else {
-            console.warn(
-              "Admin signup notification skipped: no admin email in users collection"
-            );
-          }
+if (adminEmail) {
+  void sendEmail({
+    to: adminEmail,
+    subject: "New KolyStore Customer Signup",
 
+    text:
+      "A new customer has signed up on KolyStore.\n\n" +
+      `Name: ${user.name || "N/A"}\n` +
+      `Email: ${user.email || "N/A"}\n` +
+      `Phone: ${user.phone || "N/A"}\n` +
+      `Customer ID: ${user.customerId || "N/A"}`,
+
+    html: `
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+  <title>New Customer Signup</title>
+</head>
+
+<body
+  style="
+    margin:0;
+    padding:0;
+    background-color:#f4f7f2;
+    font-family:Arial, Helvetica, sans-serif;
+    color:#1f2937;
+  "
+>
+
+  <!-- Outer Wrapper -->
+  <table
+    width="100%"
+    cellpadding="0"
+    cellspacing="0"
+    border="0"
+    style="
+      width:100%;
+      background-color:#f4f7f2;
+      padding:30px 15px;
+    "
+  >
+    <tr>
+      <td align="center">
+
+        <!-- Main Card -->
+        <table
+          width="100%"
+          cellpadding="0"
+          cellspacing="0"
+          border="0"
+          style="
+            width:100%;
+            max-width:600px;
+            background-color:#ffffff;
+            border-radius:14px;
+            overflow:hidden;
+          "
+        >
+
+          <!-- ================= HEADER ================= -->
+          <tr>
+            <td
+              style="
+                background-color:#498520;
+                padding:28px 25px;
+                text-align:center;
+              "
+            >
+
+              <div
+                style="
+                  font-size:26px;
+                  line-height:1.3;
+                  font-weight:700;
+                  color:#ffffff;
+                  letter-spacing:0.5px;
+                "
+              >
+                KolyStore
+              </div>
+
+              <div
+                style="
+                  margin-top:7px;
+                  font-size:13px;
+                  line-height:1.5;
+                  color:#eaf5e4;
+                "
+              >
+                Customer Management System
+              </div>
+
+            </td>
+          </tr>
+
+
+          <!-- ================= CONTENT ================= -->
+          <tr>
+            <td
+              style="
+                padding:32px 28px;
+              "
+            >
+
+              <!-- Heading -->
+              <h1
+                style="
+                  margin:0;
+                  padding:0;
+                  font-size:24px;
+                  line-height:1.3;
+                  font-weight:700;
+                  color:#111827;
+                "
+              >
+                New Customer Signup
+              </h1>
+
+
+              <!-- Description -->
+              <p
+                style="
+                  margin:12px 0 25px;
+                  padding:0;
+                  font-size:14px;
+                  line-height:1.7;
+                  color:#6b7280;
+                "
+              >
+                A new customer has successfully created an account
+                on your KolyStore website.
+              </p>
+
+
+              <!-- ================= CUSTOMER TABLE ================= -->
+              <table
+                width="100%"
+                cellpadding="0"
+                cellspacing="0"
+                border="0"
+                style="
+                  width:100%;
+                  table-layout:fixed;
+                  border:1px solid #e5e7eb;
+                  border-radius:10px;
+                  overflow:hidden;
+                "
+              >
+
+                <!-- Table Header -->
+                <tr>
+                  <td
+                    colspan="2"
+                    style="
+                      background-color:#f8faf7;
+                      padding:15px 16px;
+                      font-size:14px;
+                      line-height:1.5;
+                      font-weight:700;
+                      color:#374151;
+                      border-bottom:1px solid #e5e7eb;
+                    "
+                  >
+                    Customer Information
+                  </td>
+                </tr>
+
+
+                <!-- ================= NAME ================= -->
+                <tr>
+
+                  <td
+                    width="30%"
+                    style="
+                      width:30%;
+                      padding:14px 16px;
+                      font-size:13px;
+                      line-height:1.5;
+                      color:#6b7280;
+                      border-bottom:1px solid #f0f0f0;
+                      vertical-align:middle;
+                      white-space:nowrap;
+                    "
+                  >
+                    Name
+                  </td>
+
+                  <td
+                    width="70%"
+                    style="
+                      width:70%;
+                      max-width:0;
+                      padding:14px 16px;
+                      font-size:13px;
+                      line-height:1.5;
+                      font-weight:600;
+                      color:#111827;
+                      border-bottom:1px solid #f0f0f0;
+                      vertical-align:middle;
+                      white-space:nowrap;
+                      overflow:hidden;
+                      text-overflow:ellipsis;
+                    "
+                  >
+                    ${user.name || "N/A"}
+                  </td>
+
+                </tr>
+
+
+                <!-- ================= EMAIL ================= -->
+                <tr>
+
+                  <td
+                    width="30%"
+                    style="
+                      width:30%;
+                      padding:14px 16px;
+                      font-size:13px;
+                      line-height:1.5;
+                      color:#6b7280;
+                      border-bottom:1px solid #f0f0f0;
+                      vertical-align:middle;
+                      white-space:nowrap;
+                    "
+                  >
+                    Email
+                  </td>
+
+                  <td
+                    width="70%"
+                    style="
+                      width:70%;
+                      max-width:0;
+                      padding:14px 16px;
+                      font-size:13px;
+                      line-height:1.5;
+                      font-weight:600;
+                      color:#111827;
+                      border-bottom:1px solid #f0f0f0;
+                      vertical-align:middle;
+                      white-space:nowrap;
+                      overflow:hidden;
+                      text-overflow:ellipsis;
+                    "
+                  >
+                    ${user.email || "N/A"}
+                  </td>
+
+                </tr>
+
+
+                <!-- ================= PHONE ================= -->
+                <tr>
+
+                  <td
+                    width="30%"
+                    style="
+                      width:30%;
+                      padding:14px 16px;
+                      font-size:13px;
+                      line-height:1.5;
+                      color:#6b7280;
+                      border-bottom:1px solid #f0f0f0;
+                      vertical-align:middle;
+                      white-space:nowrap;
+                    "
+                  >
+                    Phone
+                  </td>
+
+                  <td
+                    width="70%"
+                    style="
+                      width:70%;
+                      max-width:0;
+                      padding:14px 16px;
+                      font-size:13px;
+                      line-height:1.5;
+                      font-weight:600;
+                      color:#111827;
+                      border-bottom:1px solid #f0f0f0;
+                      vertical-align:middle;
+                      white-space:nowrap;
+                      overflow:hidden;
+                      text-overflow:ellipsis;
+                    "
+                  >
+                    ${user.phone || "N/A"}
+                  </td>
+
+                </tr>
+
+
+                <!-- ================= CUSTOMER ID ================= -->
+                <tr>
+
+                  <td
+                    width="30%"
+                    style="
+                      width:30%;
+                      padding:14px 16px;
+                      font-size:13px;
+                      line-height:1.5;
+                      color:#6b7280;
+                      vertical-align:middle;
+                      white-space:nowrap;
+                    "
+                  >
+                    Customer ID
+                  </td>
+
+                  <td
+                    width="70%"
+                    style="
+                      width:70%;
+                      max-width:0;
+                      padding:14px 16px;
+                      font-size:13px;
+                      line-height:1.5;
+                      font-weight:700;
+                      color:#498520;
+                      vertical-align:middle;
+                      white-space:nowrap;
+                      overflow:hidden;
+                      text-overflow:ellipsis;
+                    "
+                  >
+                    ${user.customerId || "N/A"}
+                  </td>
+
+                </tr>
+
+              </table>
+
+
+              <!-- ================= NOTICE ================= -->
+              <div
+                style="
+                  margin-top:24px;
+                  padding:14px 16px;
+                  background-color:#f8faf7;
+                  border-left:4px solid #498520;
+                  border-radius:6px;
+                "
+              >
+
+                <p
+                  style="
+                    margin:0;
+                    padding:0;
+                    font-size:12px;
+                    line-height:1.6;
+                    color:#6b7280;
+                  "
+                >
+                  This is an automated notification from KolyStore.
+                  No action is required unless you need to review the
+                  customer's account.
+                </p>
+
+              </div>
+
+            </td>
+          </tr>
+
+
+          <!-- ================= FOOTER ================= -->
+          <tr>
+            <td
+              style="
+                padding:20px 25px;
+                background-color:#f8faf7;
+                text-align:center;
+                border-top:1px solid #edf0eb;
+              "
+            >
+
+              <p
+                style="
+                  margin:0;
+                  padding:0;
+                  font-size:12px;
+                  line-height:1.6;
+                  color:#6b7280;
+                "
+              >
+                © ${new Date().getFullYear()} KolyStore.
+                All rights reserved.
+              </p>
+
+              <p
+                style="
+                  margin:5px 0 0;
+                  padding:0;
+                  font-size:11px;
+                  line-height:1.5;
+                  color:#9ca3af;
+                "
+              >
+                Automated Customer Notification
+              </p>
+
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>
+    `,
+  });
+} else {
+  console.warn(
+    "Admin signup notification skipped: no admin email in users collection"
+  );
+}
           return res.status(201).send({
             success: true,
 
@@ -1921,7 +2333,93 @@ Received at: ${new Date().toLocaleString()}
       }
     });
 
+    // =====================================================
+    // CHANGE PASSWORD API
+    // =====================================================
 
+    app.post("/change-password", verifyToken, async (req, res) => {
+      try {
+        const { currentPassword, newPassword, confirmPassword } = req.body || {};
+
+        if (!currentPassword || !newPassword || !confirmPassword) {
+          return res.status(400).send({
+            success: false,
+            message: "Current password, new password, and confirm password are required.",
+          });
+        }
+
+        if (newPassword !== confirmPassword) {
+          return res.status(400).send({
+            success: false,
+            message: "New password and confirm password do not match.",
+          });
+        }
+
+        if (String(newPassword).length < 6) {
+          return res.status(400).send({
+            success: false,
+            message: "New password must be at least 6 characters long.",
+          });
+        }
+
+        const user = await usersCollection.findOne({
+          _id: new ObjectId(req.user.userId),
+        });
+
+        if (!user) {
+          return res.status(404).send({
+            success: false,
+            message: "User not found.",
+          });
+        }
+
+        // Verify existing password
+        const isCurrentPasswordValid = verifyPassword(currentPassword, user.password);
+
+        if (!isCurrentPasswordValid) {
+          return res.status(400).send({
+            success: false,
+            message: "Incorrect current password. Please try again.",
+          });
+        }
+
+        // Hash new password
+        const newHashedPassword = hashPassword(String(newPassword));
+
+        await usersCollection.updateOne(
+          { _id: new ObjectId(req.user.userId) },
+          {
+            $set: {
+              password: newHashedPassword,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        // Send confirmation email
+        if (user.email) {
+          void sendEmail({
+            to: user.email,
+            subject: "Password Changed – KolyStore",
+            text:
+              `Hello ${user.name || "Customer"},\n\n` +
+              `Your KolyStore account password has been successfully updated.\n\n` +
+              `If you did not make this change, please contact support immediately.`,
+          });
+        }
+
+        return res.status(200).send({
+          success: true,
+          message: "Password updated successfully.",
+        });
+      } catch (error) {
+        console.error("CHANGE PASSWORD ERROR:", error);
+        return res.status(500).send({
+          success: false,
+          message: "Failed to update password. Please try again later.",
+        });
+      }
+    });
 
 // =====================================================
 // GET ALL USERS API
@@ -4963,28 +5461,631 @@ app.post("/orders", verifyToken, async (req, res) => {
 }
 
     const adminEmail = await resolveAdminEmail();
-    if (adminEmail) {
-      void sendEmail({
-        to: adminEmail,
-        subject: `New order ${orderId} – KolyStore`,
-        text:
-          "A new order has been placed.\n\n" +
-          `Order ID: ${orderId}\n` +
-          `Customer: ${user.name || ""}\n` +
-          `Email: ${user.email || ""}\n` +
-          `Phone: ${user.phone || ""}\n` +
-          `Address: ${finalAddress}\n` +
-          `Payment: ${paymentMethod}\n` +
-          `Transaction ID: ${payment.transactionId.trim()}\n` +
-          `Total: ${total}\n\n` +
-          `Items:\n${itemsSummary}`,
-      });
-    } else {
-      console.warn(
-        "Admin order notification skipped: no admin email in users collection"
-      );
-    }
 
+if (adminEmail) {
+  void sendEmail({
+    to: adminEmail,
+    subject: `New order ${orderId} – KolyStore`,
+
+    text:
+      "A new order has been placed on KolyStore.\n\n" +
+      `Order ID: ${orderId}\n` +
+      `Customer: ${user.name || "N/A"}\n` +
+      `Email: ${user.email || "N/A"}\n` +
+      `Phone: ${user.phone || "N/A"}\n` +
+      `Address: ${finalAddress || "N/A"}\n` +
+      `Payment: ${paymentMethod || "N/A"}\n` +
+      `Transaction ID: ${payment.transactionId?.trim() || "N/A"}\n` +
+      `Total: ${total}\n\n` +
+      `Items:\n${itemsSummary}`,
+
+    html: `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+  <title>New Order - KolyStore</title>
+</head>
+
+<body
+  style="
+    margin:0;
+    padding:0;
+    background:#f4f7f2;
+    font-family:Arial,Helvetica,sans-serif;
+    color:#1f2937;
+  "
+>
+
+<table
+  width="100%"
+  cellpadding="0"
+  cellspacing="0"
+  border="0"
+  style="
+    width:100%;
+    background:#f4f7f2;
+    padding:12px 8px;
+  "
+>
+  <tr>
+    <td align="center">
+
+      <!-- MAIN CARD -->
+      <table
+        width="100%"
+        cellpadding="0"
+        cellspacing="0"
+        border="0"
+        style="
+          width:100%;
+          max-width:560px;
+          background:#ffffff;
+          border-radius:10px;
+          overflow:hidden;
+          border:1px solid #e5e7eb;
+        "
+      >
+
+        <!-- HEADER -->
+        <tr>
+          <td
+            style="
+              background:#498520;
+              padding:18px 15px;
+              text-align:center;
+            "
+          >
+
+            <div
+              style="
+                font-size:22px;
+                line-height:1.2;
+                font-weight:700;
+                color:#ffffff;
+              "
+            >
+              KolyStore
+            </div>
+
+            <div
+              style="
+                margin-top:4px;
+                font-size:11px;
+                line-height:1.4;
+                color:#eaf5e4;
+              "
+            >
+              Order Management System
+            </div>
+
+          </td>
+        </tr>
+
+
+        <!-- CONTENT -->
+        <tr>
+          <td
+            style="
+              padding:20px 15px;
+            "
+          >
+
+            <!-- TITLE -->
+            <h1
+              style="
+                margin:0;
+                padding:0;
+                font-size:20px;
+                line-height:1.3;
+                font-weight:700;
+                color:#111827;
+              "
+            >
+              New Order Received
+            </h1>
+
+            <p
+              style="
+                margin:6px 0 16px;
+                padding:0;
+                font-size:12px;
+                line-height:1.5;
+                color:#6b7280;
+              "
+            >
+              A new order has been successfully placed on KolyStore.
+            </p>
+
+
+            <!-- ORDER ID -->
+            <table
+              width="100%"
+              cellpadding="0"
+              cellspacing="0"
+              border="0"
+              style="
+                width:100%;
+                background:#f8faf7;
+                border:1px solid #e2eadf;
+                border-radius:8px;
+              "
+            >
+              <tr>
+                <td
+                  style="
+                    padding:10px 12px;
+                    font-size:10px;
+                    font-weight:700;
+                    color:#6b7280;
+                    text-transform:uppercase;
+                    letter-spacing:.6px;
+                    white-space:nowrap;
+                    width:25%;
+                  "
+                >
+                  Order ID
+                </td>
+
+                <td
+                  style="
+                    padding:10px 12px;
+                    font-size:12px;
+                    font-weight:700;
+                    color:#498520;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                  "
+                >
+                  ${orderId || "N/A"}
+                </td>
+              </tr>
+            </table>
+
+
+            <!-- CUSTOMER INFORMATION -->
+            <table
+              width="100%"
+              cellpadding="0"
+              cellspacing="0"
+              border="0"
+              style="
+                width:100%;
+                margin-top:12px;
+                table-layout:fixed;
+                border:1px solid #e5e7eb;
+                border-radius:8px;
+                overflow:hidden;
+              "
+            >
+
+              <!-- HEADER -->
+              <tr>
+                <td
+                  colspan="2"
+                  style="
+                    padding:10px 12px;
+                    background:#f8faf7;
+                    border-bottom:1px solid #e5e7eb;
+                    font-size:12px;
+                    font-weight:700;
+                    color:#374151;
+                  "
+                >
+                  Customer Information
+                </td>
+              </tr>
+
+
+              <!-- CUSTOMER -->
+              <tr>
+
+                <td
+                  width="27%"
+                  style="
+                    width:27%;
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    color:#6b7280;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    vertical-align:middle;
+                  "
+                >
+                  Customer
+                </td>
+
+                <td
+                  width="73%"
+                  style="
+                    width:73%;
+                    max-width:0;
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    font-weight:600;
+                    color:#111827;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    vertical-align:middle;
+                  "
+                >
+                  ${user.name || "N/A"}
+                </td>
+
+              </tr>
+
+
+              <!-- EMAIL -->
+              <tr>
+
+                <td
+                  style="
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    color:#6b7280;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    vertical-align:middle;
+                  "
+                >
+                  Email
+                </td>
+
+                <td
+                  style="
+                    max-width:0;
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    font-weight:600;
+                    color:#111827;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    vertical-align:middle;
+                  "
+                >
+                  ${user.email || "N/A"}
+                </td>
+
+              </tr>
+
+
+              <!-- PHONE -->
+              <tr>
+
+                <td
+                  style="
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    color:#6b7280;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    vertical-align:middle;
+                  "
+                >
+                  Phone
+                </td>
+
+                <td
+                  style="
+                    max-width:0;
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    font-weight:600;
+                    color:#111827;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    vertical-align:middle;
+                  "
+                >
+                  ${user.phone || "N/A"}
+                </td>
+
+              </tr>
+
+
+              <!-- ADDRESS -->
+              <tr>
+
+                <td
+                  style="
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    color:#6b7280;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    vertical-align:middle;
+                  "
+                >
+                  Address
+                </td>
+
+                <td
+                  style="
+                    max-width:0;
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    font-weight:600;
+                    color:#111827;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    vertical-align:middle;
+                  "
+                >
+                  ${finalAddress || "N/A"}
+                </td>
+
+              </tr>
+
+
+              <!-- PAYMENT -->
+              <tr>
+
+                <td
+                  style="
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    color:#6b7280;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    vertical-align:middle;
+                  "
+                >
+                  Payment
+                </td>
+
+                <td
+                  style="
+                    max-width:0;
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    font-weight:600;
+                    color:#111827;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    vertical-align:middle;
+                  "
+                >
+                  ${paymentMethod || "N/A"}
+                </td>
+
+              </tr>
+
+
+              <!-- TRANSACTION -->
+              <tr>
+
+                <td
+                  style="
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    color:#6b7280;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    vertical-align:middle;
+                  "
+                >
+                  Transaction ID
+                </td>
+
+                <td
+                  style="
+                    max-width:0;
+                    padding:8px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    font-weight:600;
+                    color:#111827;
+                    border-bottom:1px solid #f0f0f0;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    vertical-align:middle;
+                  "
+                >
+                  ${payment.transactionId?.trim() || "N/A"}
+                </td>
+
+              </tr>
+
+
+              <!-- TOTAL -->
+              <tr>
+
+                <td
+                  style="
+                    padding:9px 10px;
+                    font-size:11px;
+                    line-height:1.3;
+                    color:#6b7280;
+                    white-space:nowrap;
+                    vertical-align:middle;
+                  "
+                >
+                  Total
+                </td>
+
+                <td
+                  style="
+                    max-width:0;
+                    padding:9px 10px;
+                    font-size:13px;
+                    line-height:1.3;
+                    font-weight:700;
+                    color:#498520;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    vertical-align:middle;
+                  "
+                >
+                  ${total}
+                </td>
+
+              </tr>
+
+            </table>
+
+
+            <!-- ORDER ITEMS -->
+            <table
+              width="100%"
+              cellpadding="0"
+              cellspacing="0"
+              border="0"
+              style="
+                width:100%;
+                margin-top:12px;
+                border:1px solid #e5e7eb;
+                border-radius:8px;
+                overflow:hidden;
+              "
+            >
+
+              <tr>
+                <td
+                  style="
+                    padding:10px 12px;
+                    background:#f8faf7;
+                    border-bottom:1px solid #e5e7eb;
+                    font-size:12px;
+                    font-weight:700;
+                    color:#374151;
+                  "
+                >
+                  Order Items
+                </td>
+              </tr>
+
+              <tr>
+                <td
+                  style="
+                    padding:10px 12px;
+                    font-size:11px;
+                    line-height:1.5;
+                    color:#4b5563;
+                    white-space:pre-line;
+                    overflow-wrap:anywhere;
+                  "
+                >
+                  ${itemsSummary}
+                </td>
+              </tr>
+
+            </table>
+
+
+            <!-- NOTICE -->
+            <table
+              width="100%"
+              cellpadding="0"
+              cellspacing="0"
+              border="0"
+              style="
+                width:100%;
+                margin-top:12px;
+                background:#f8faf7;
+                border-left:3px solid #498520;
+                border-radius:5px;
+              "
+            >
+              <tr>
+                <td
+                  style="
+                    padding:10px 12px;
+                    font-size:10px;
+                    line-height:1.5;
+                    color:#6b7280;
+                  "
+                >
+                  This is an automated order notification from
+                  KolyStore. Please review the order details and
+                  process the order accordingly.
+                </td>
+              </tr>
+            </table>
+
+          </td>
+        </tr>
+
+
+        <!-- FOOTER -->
+        <tr>
+          <td
+            style="
+              padding:13px 12px;
+              background:#f8faf7;
+              text-align:center;
+              border-top:1px solid #edf0eb;
+            "
+          >
+
+            <p
+              style="
+                margin:0;
+                font-size:10px;
+                line-height:1.5;
+                color:#6b7280;
+              "
+            >
+              © ${new Date().getFullYear()} KolyStore.
+              All rights reserved.
+            </p>
+
+            <p
+              style="
+                margin:3px 0 0;
+                font-size:9px;
+                line-height:1.4;
+                color:#9ca3af;
+              "
+            >
+              Automated Order Notification
+            </p>
+
+          </td>
+        </tr>
+
+      </table>
+
+    </td>
+  </tr>
+</table>
+
+</body>
+</html>
+    `,
+  });
+} else {
+  console.warn(
+    "Admin order notification skipped: no admin email in users collection"
+  );
+}
     // =========================================================
     // RESPONSE
     // =========================================================
