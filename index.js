@@ -618,6 +618,96 @@ async function run() {
       db.collection("productQuestions");
 
     // =====================================================
+    // SITEMAP.XML ROUTE (FOR GOOGLE FAST INDEXING & SEO)
+    // =====================================================
+
+    app.get("/sitemap.xml", async (req, res) => {
+      try {
+        const baseUrl = "https://kolystore.com";
+        const staticPages = [
+          { url: "/", priority: "1.0", changefreq: "daily" },
+          { url: "/all-products", priority: "0.9", changefreq: "daily" },
+          { url: "/about", priority: "0.7", changefreq: "monthly" },
+          { url: "/contact-us", priority: "0.7", changefreq: "monthly" },
+        ];
+
+        let categories = ["seeds", "plants", "vegetables", "toys", "clothes", "cosmetic"];
+        try {
+          const fetchedCategories = await productsCollection.distinct("category");
+          if (Array.isArray(fetchedCategories) && fetchedCategories.length > 0) {
+            const formatted = fetchedCategories
+              .filter(Boolean)
+              .map((c) =>
+                String(c)
+                  .toLowerCase()
+                  .trim()
+                  .replace(/&/g, "and")
+                  .replace(/[^a-z0-9\s-]/g, "")
+                  .replace(/\s+/g, "-")
+              );
+            categories = [...new Set([...categories, ...formatted])];
+          }
+        } catch (e) {
+          console.error("Sitemap category error:", e);
+        }
+
+        let products = [];
+        try {
+          products = await productsCollection
+            .find(
+              { $or: [{ isActive: true }, { isActive: { $exists: false } }] },
+              { projection: { _id: 1, updatedAt: 1, createdAt: 1 } }
+            )
+            .toArray();
+        } catch (e) {
+          console.error("Sitemap product error:", e);
+        }
+
+        let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+        xml += `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n`;
+
+        staticPages.forEach((page) => {
+          xml += `  <url>\n`;
+          xml += `    <loc>${baseUrl}${page.url}</loc>\n`;
+          xml += `    <changefreq>${page.changefreq}</changefreq>\n`;
+          xml += `    <priority>${page.priority}</priority>\n`;
+          xml += `  </url>\n`;
+        });
+
+        categories.forEach((cat) => {
+          if (cat) {
+            xml += `  <url>\n`;
+            xml += `    <loc>${baseUrl}/category/${encodeURIComponent(cat)}</loc>\n`;
+            xml += `    <changefreq>daily</changefreq>\n`;
+            xml += `    <priority>0.8</priority>\n`;
+            xml += `  </url>\n`;
+          }
+        });
+
+        products.forEach((prod) => {
+          const lastmod = prod.updatedAt || prod.createdAt;
+          const formattedDate = lastmod ? new Date(lastmod).toISOString().split("T")[0] : null;
+          xml += `  <url>\n`;
+          xml += `    <loc>${baseUrl}/product/${prod._id}</loc>\n`;
+          if (formattedDate) {
+            xml += `    <lastmod>${formattedDate}</lastmod>\n`;
+          }
+          xml += `    <changefreq>weekly</changefreq>\n`;
+          xml += `    <priority>0.7</priority>\n`;
+          xml += `  </url>\n`;
+        });
+
+        xml += `</urlset>`;
+
+        res.header("Content-Type", "application/xml");
+        return res.send(xml);
+      } catch (error) {
+        console.error("Sitemap route error:", error);
+        return res.status(500).send("Error generating sitemap");
+      }
+    });
+
+    // =====================================================
     // CONTACT US ROUTE
     // =====================================================
 
