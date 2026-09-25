@@ -617,6 +617,9 @@ async function run() {
     const productQuestionsCollection =
       db.collection("productQuestions");
 
+    const storeSettingsCollection =
+      db.collection("storeSettings");
+
     // =====================================================
     // SITEMAP.XML ROUTE (FOR GOOGLE FAST INDEXING & SEO)
     // =====================================================
@@ -2715,6 +2718,114 @@ app.delete(
 
 
 
+
+    // =====================================================
+    // STORE DELIVERY CHARGE
+    // =====================================================
+
+    const deliveryChargeSubscribers = new Set();
+
+    const sendDeliveryChargeUpdate = (deliveryCharge) => {
+      const message = `data: ${JSON.stringify({ deliveryCharge })}\n\n`;
+      for (const subscriber of deliveryChargeSubscribers) {
+        subscriber.write(message);
+      }
+    };
+
+    app.get("/settings/delivery-charge", async (req, res) => {
+      try {
+        const settings = await storeSettingsCollection.findOne(
+          { _id: "shipping" },
+          { projection: { deliveryCharge: 1 } }
+        );
+
+        return res.send({
+          success: true,
+          deliveryCharge: Math.max(0, Number(settings?.deliveryCharge) || 0),
+        });
+      } catch (error) {
+        console.error("Get delivery charge error:", error);
+        return res.status(500).send({
+          success: false,
+          message: "Failed to load delivery charge",
+        });
+      }
+    });
+
+    // Keeps the cart and checkout amount current while a customer is already
+    // on the page. The browser reconnects automatically if the connection drops.
+    app.get("/settings/delivery-charge/stream", async (req, res) => {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
+      res.write("retry: 3000\n\n");
+
+      deliveryChargeSubscribers.add(res);
+
+      try {
+        const settings = await storeSettingsCollection.findOne(
+          { _id: "shipping" },
+          { projection: { deliveryCharge: 1 } }
+        );
+        res.write(
+          `data: ${JSON.stringify({
+            deliveryCharge: Math.max(
+              0,
+              Number(settings?.deliveryCharge) || 0
+            ),
+          })}\n\n`
+        );
+      } catch (error) {
+        console.error("Stream delivery charge error:", error);
+      }
+
+      req.on("close", () => {
+        deliveryChargeSubscribers.delete(res);
+        res.end();
+      });
+    });
+
+    app.put(
+      "/admin/settings/delivery-charge",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const deliveryCharge = Number(req.body?.deliveryCharge);
+          if (!Number.isFinite(deliveryCharge) || deliveryCharge < 0) {
+            return res.status(400).send({
+              success: false,
+              message: "Delivery charge must be a non-negative number",
+            });
+          }
+
+          const value = Number(deliveryCharge.toFixed(2));
+          await storeSettingsCollection.updateOne(
+            { _id: "shipping" },
+            {
+              $set: {
+                deliveryCharge: value,
+                updatedAt: new Date(),
+                updatedBy: req.user.userId,
+              },
+              $setOnInsert: { createdAt: new Date() },
+            },
+            { upsert: true }
+          );
+
+          sendDeliveryChargeUpdate(value);
+
+          return res.send({ success: true, deliveryCharge: value });
+        } catch (error) {
+          console.error("Update delivery charge error:", error);
+          return res.status(500).send({
+            success: false,
+            message: "Failed to update delivery charge",
+          });
+        }
+      }
+    );
 
     // =====================================================
     // ADD PRODUCT API
@@ -4836,20 +4947,32 @@ app.post("/orders", verifyToken, async (req, res) => {
     }
 
     // =========================================================
-    // ORDER TOTAL
+    // ORDER TOTAL & SHIPPING FEE (Free shipping over 5 Euros)
     // =========================================================
 
-    const total = lineItems.reduce(
+    const subtotal = lineItems.reduce(
       (sum, item) => sum + Number(item.total || 0),
       0
     );
 
-    if (total <= 0) {
+    if (subtotal <= 0) {
       return res.status(400).send({
         success: false,
         message: "Invalid order total",
       });
     }
+
+    const isFreeShipping = subtotal > 5;
+    const shippingSettings = await storeSettingsCollection.findOne(
+      { _id: "shipping" },
+      { projection: { deliveryCharge: 1 } }
+    );
+    const globalDeliveryCharge = Math.max(
+      0,
+      Number(shippingSettings?.deliveryCharge) || 0
+    );
+    const shippingFee = isFreeShipping ? 0 : globalDeliveryCharge;
+    const total = Number((subtotal + shippingFee).toFixed(2));
 
     // =========================================================
     // PAYPAL
@@ -4919,6 +5042,10 @@ app.post("/orders", verifyToken, async (req, res) => {
       },
 
       items: lineItems,
+
+      subtotal: Number(subtotal.toFixed(2)),
+
+      shippingFee: Number(shippingFee.toFixed(2)),
 
       total,
 
@@ -7248,9 +7375,38 @@ app.delete(
           return status === "cancelled";
         };
 
-        const getOrderTotal = (order) => {
+        // Dashboard sales represent product revenue only; delivery fees are
+        // deliberately excluded from every sales card and chart.
+        const getOrderProductTotal = (order) => {
+          const subtotal = Number(order?.subtotal);
+          if (Number.isFinite(subtotal)) {
+            return Math.max(0, subtotal);
+          }
+
+          // Support older orders that were saved before `subtotal` existed.
+          if (Array.isArray(order?.items) && order.items.length > 0) {
+            return order.items.reduce((sum, item) => {
+              const lineTotal = Number(item?.total);
+              if (Number.isFinite(lineTotal)) {
+                return sum + Math.max(0, lineTotal);
+              }
+
+              const price = Number(item?.price);
+              const quantity = Number(item?.quantity);
+              return sum +
+                (Number.isFinite(price) && Number.isFinite(quantity)
+                  ? Math.max(0, price * quantity)
+                  : 0);
+            }, 0);
+          }
+
           const total = Number(order?.total);
-          return Number.isFinite(total) ? total : 0;
+          const shippingFee = Number(order?.shippingFee);
+          if (Number.isFinite(total) && Number.isFinite(shippingFee)) {
+            return Math.max(0, total - shippingFee);
+          }
+
+          return 0;
         };
 
         const getOrderDate = (order) => {
@@ -7310,6 +7466,9 @@ app.delete(
               {
                 projection: {
                   total: 1,
+                  subtotal: 1,
+                  shippingFee: 1,
+                  items: 1,
                   createdAt: 1,
                   userId: 1,
                   customer: 1,
@@ -7393,7 +7552,7 @@ app.delete(
             continue;
           }
 
-          const total = getOrderTotal(order);
+          const total = getOrderProductTotal(order);
 
           totalSales += total;
 
