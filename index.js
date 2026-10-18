@@ -3227,10 +3227,10 @@ app.get("/products", async (req, res) => {
       .sort({ createdAt: -1 })
       .toArray();
 
-    // Product cards are public data. Browser/CDN caching makes a repeat visit
-    // instant while stale-while-revalidate keeps the list fresh in background.
+    // The frontend keeps a short in-memory catalogue cache. Don't let browser
+    // or CDN caching hide newly added products from its refresh requests.
     if (isSummaryRequest) {
-      res.set("Cache-Control", "public, max-age=120, stale-while-revalidate=300");
+      res.set("Cache-Control", "no-store, max-age=0");
     }
 
     return res.send({
